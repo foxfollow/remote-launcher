@@ -51,8 +51,17 @@ Make sure `~/.local/bin` is in your `PATH`.
 ```bash
 remote-launcher myvm                                  # bare interactive
 remote-launcher myvm --task ~/projects/demo/TASK.md   # pre-load a task
+remote-launcher myvm --confirm-bash                   # require approval for every Bash call
 remote-launcher myvm -- --model claude-opus-4-7       # forward args to claude
 ```
+
+**Bash auto-approve.** By default the launcher passes
+`--allowedTools 'Bash(*)'` to Claude so every Bash call runs without an
+approval prompt. The Bash tool here means "go through SSH to the VM" —
+the VM is physically isolated from the Mac, so the prompts add friction
+without protection. **Read/Edit/Write keep prompting** because they hit
+the Mac filesystem. Pass `--confirm-bash` to restore prompts for Bash
+too (useful when the VM holds something you care about).
 
 A walkthrough of the simplest case (single agent installs nginx and
 verifies) is in [`examples/single-agent.md`](examples/single-agent.md).
