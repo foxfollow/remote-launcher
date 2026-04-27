@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# remote-launcher-doctor — sanity-check installation and SSH reachability.
+#
+# Usage:
+#   remote-launcher-doctor                # files / PATH only
+#   remote-launcher-doctor <ssh-host>     # also live SSH + wrapper round-trip
+
+set -uo pipefail
+
+SELF="${BASH_SOURCE[0]}"
+while [[ -L "$SELF" ]]; do SELF=$(readlink "$SELF"); done
+SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+
+PASS=0; FAIL=0
+ok()   { echo "  ✅ $1"; PASS=$((PASS+1)); }
+fail() { echo "  ❌ $1"; FAIL=$((FAIL+1)); }
+
+echo "== file/setup checks =="
+[[ -d "$PROJECT_DIR" ]]                    && ok "project at $PROJECT_DIR" || fail "project dir missing"
+[[ -x "$PROJECT_DIR/bin/ssh-shell" ]]      && ok "ssh-shell executable"    || fail "ssh-shell missing/non-exec"
+[[ -L "$PROJECT_DIR/bin/ssh-shell-bash" && -x "$PROJECT_DIR/bin/ssh-shell-bash" ]] \
+  && ok "ssh-shell-bash symlink (Claude requires 'bash' in shell path)" \
+  || fail "ssh-shell-bash symlink missing — Claude won't honor CLAUDE_CODE_SHELL"
+[[ -x "$PROJECT_DIR/bin/remote-launcher" ]] && ok "remote-launcher executable" || fail "remote-launcher missing/non-exec"
+[[ -f "$PROJECT_DIR/prompts/REMOTE_PROMPT.md" ]] && ok "REMOTE_PROMPT.md present" || fail "REMOTE_PROMPT.md missing"
+[[ -f "$PROJECT_DIR/skill/SKILL.md" ]]     && ok "SKILL.md present"        || fail "SKILL.md missing"
+
+if [[ -L "$HOME/.local/bin/remote-launcher" || -x "$HOME/.local/bin/remote-launcher" ]]; then
+  ok "~/.local/bin/remote-launcher in place"
+else
+  fail "~/.local/bin/remote-launcher NOT in place — run install.sh"
+fi
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ok "~/.local/bin in PATH" ;;
+  *) fail "~/.local/bin NOT in PATH — add to ~/.zshrc: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+esac
+command -v claude >/dev/null && ok "claude in PATH" || fail "claude not in PATH"
+command -v ssh    >/dev/null && ok "ssh in PATH"    || fail "ssh not in PATH"
+
+if [[ $# -ge 1 ]]; then
+  HOST="$1"
+  echo
+  echo "== live SSH + wrapper test against $HOST =="
+
+  if ssh -o ConnectTimeout=5 -o BatchMode=yes "$HOST" 'echo ok' >/dev/null 2>&1; then
+    ok "ssh $HOST 'echo ok'"
+  else
+    fail "ssh to $HOST (BatchMode, key auth)"
+    echo "Summary: $PASS passed, $FAIL failed"; exit 1
+  fi
+
+  SESSION_ID="doctor-$$"
+  out=$(VM_REMOTE_HOST="$HOST" VM_REMOTE_SESSION="$SESSION_ID" \
+        "$PROJECT_DIR/bin/ssh-shell" -c 'echo "hostname=$(hostname); pwd=$(pwd)"')
+  if [[ "$out" == hostname=* ]]; then
+    ok "ssh-shell wrapper round-trip: $out"
+  else
+    fail "ssh-shell round-trip — unexpected output: $out"
+  fi
+
+  out2=$(VM_REMOTE_HOST="$HOST" VM_REMOTE_SESSION="$SESSION_ID" \
+         "$PROJECT_DIR/bin/ssh-shell" -c 'cd /tmp && pwd')
+  out3=$(VM_REMOTE_HOST="$HOST" VM_REMOTE_SESSION="$SESSION_ID" \
+         "$PROJECT_DIR/bin/ssh-shell" -c 'pwd')
+  if [[ "$out2" == "/tmp" && "$out3" == "/tmp" ]]; then
+    ok "cwd persistence (cd /tmp; pwd → /tmp)"
+  else
+    fail "cwd not persisting (got '$out2' then '$out3')"
+  fi
+
+  rm -rf "${TMPDIR:-/tmp}/remote-launcher-${SESSION_ID}"
+fi
+
+echo
+echo "Summary: $PASS passed, $FAIL failed"
+[[ $FAIL -eq 0 ]] && exit 0 || exit 1

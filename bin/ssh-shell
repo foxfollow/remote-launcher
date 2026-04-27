@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# ssh-shell — CLAUDE_CODE_SHELL wrapper.
+# Forwards every Bash tool invocation to $VM_REMOTE_HOST via SSH,
+# preserving working directory between calls (per-session).
+#
+# Required env (set by remote-launcher):
+#   VM_REMOTE_HOST       — ssh destination (e.g. "user@vm" or alias from ~/.ssh/config)
+#   VM_REMOTE_SESSION    — unique id per remote-launcher invocation
+#
+# Optional env:
+#   VM_SSH_OPTS          — extra ssh options, space-separated (used by tests for -F config-file)
+#
+# Notes:
+# - Uses SSH ControlMaster for connection reuse.
+# - Tracks remote cwd via a tmpfile on the VM; cats it after every command.
+# - Does NOT forward SSH agent (no -A).
+# - Does NOT use SendEnv (no env vars cross to remote unless explicitly forwarded).
+
+set -uo pipefail
+
+: "${VM_REMOTE_HOST:?ssh-shell: VM_REMOTE_HOST not set; launch via remote-launcher}"
+SESSION_ID="${VM_REMOTE_SESSION:-default}"
+
+STATE_DIR="${TMPDIR:-/tmp}/remote-launcher-${SESSION_ID}"
+mkdir -p "$STATE_DIR"
+
+CWD_FILE="$STATE_DIR/cwd"
+# ControlPath has to be SHORT — Unix sockets cap at ~104 chars on macOS, and
+# OpenSSH appends a ~17-char random suffix. macOS $TMPDIR (~49 chars) plus our
+# session dir blows past the limit. Park the socket under ~/.ssh/ (already 0700,
+# already short).
+SOCK_DIR="$HOME/.ssh"
+mkdir -p "$SOCK_DIR"
+SSH_CTL="$SOCK_DIR/rl-${SESSION_ID}.s"
+REMOTE_PWD_FILE="/tmp/.remote-launcher-cwd-${SESSION_ID}"
+
+SSH_OPTS=(
+  -o "ControlMaster=auto"
+  -o "ControlPath=$SSH_CTL"
+  -o "ControlPersist=15m"
+  -o "BatchMode=yes"
+  -o "ServerAliveInterval=30"
+  -o "ServerAliveCountMax=3"
+  -T
+)
+
+# Append optional extra SSH options (used by tests, advanced users)
+if [[ -n "${VM_SSH_OPTS:-}" ]]; then
+  read -ra _EXTRA <<< "$VM_SSH_OPTS"
+  SSH_OPTS+=("${_EXTRA[@]}")
+  unset _EXTRA
+fi
+
+# Bootstrap: resolve $HOME on the VM if we don't have a cwd yet
+if [[ ! -s "$CWD_FILE" ]]; then
+  if ! ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" 'echo $HOME' > "$CWD_FILE"; then
+    echo "ssh-shell: cannot connect to $VM_REMOTE_HOST (see ssh stderr above)" >&2
+    exit 255
+  fi
+fi
+CWD=$(<"$CWD_FILE")
+[[ -z "$CWD" ]] && CWD='$HOME'
+
+# Parse args bash-style. Claude Code 2.1.x invokes the shell as
+# `<shell> -c -l <cmd>` (-c first, then -l, then the command string).
+# Real bash treats -c, -l, --login etc. as independent flags in any order,
+# and the command for -c is the next non-flag positional. Replicate that.
+CMD=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -c)
+      shift
+      # skip any further flags (-l, --login, --noprofile, etc.)
+      while [[ $# -gt 0 && "$1" == -* ]]; do shift; done
+      CMD="${1:-}"
+      break
+      ;;
+    -l|--login|--noprofile|--norc|-i)
+      shift
+      ;;
+    --version)
+      # Claude probes shells with `--version` to check they're real bash/zsh.
+      exec bash --version
+      ;;
+    *)
+      CMD="$*"
+      break
+      ;;
+  esac
+done
+
+# Empty command → no-op (Claude sometimes probes the shell at startup)
+if [[ -z "$CMD" ]]; then
+  exit 0
+fi
+
+# Run on remote in the main shell (no subshell — `cd` must persist into pwd capture).
+# Stdin is forwarded so heredocs in $CMD work.
+ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "
+cd '$CWD' 2>/dev/null || cd \$HOME
+$CMD
+__EC=\$?
+pwd > '$REMOTE_PWD_FILE' 2>/dev/null
+exit \$__EC
+"
+EC=$?
+
+# Pull updated cwd back. ControlMaster makes this cheap.
+NEW_CWD=$(ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "cat '$REMOTE_PWD_FILE' 2>/dev/null" 2>/dev/null || true)
+if [[ -n "$NEW_CWD" ]]; then
+  printf '%s\n' "$NEW_CWD" > "$CWD_FILE"
+fi
+
+exit $EC

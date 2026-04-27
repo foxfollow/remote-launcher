@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# remote-launcher — launch Claude Code with Bash redirected to a remote host via SSH.
+#
+# Usage:
+#   remote-launcher <ssh-host>                        # bare interactive
+#   remote-launcher <ssh-host> --task FILE            # pre-load task into system prompt
+#   remote-launcher <ssh-host> --no-prompt            # skip REMOTE_PROMPT.md append
+#   remote-launcher <ssh-host> -- <claude-args...>    # forward args to claude
+#
+# Examples:
+#   remote-launcher myvm
+#   remote-launcher user@10.0.0.5 --task ~/projects/demo/TASK.md
+#   remote-launcher myvm -- --model claude-opus-4-7
+
+set -euo pipefail
+
+# Resolve our own location to find sibling files (works through symlinks)
+SELF="${BASH_SOURCE[0]}"
+while [[ -L "$SELF" ]]; do SELF=$(readlink "$SELF"); done
+SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+
+# Claude Code only accepts CLAUDE_CODE_SHELL paths containing "bash" or "zsh"
+# in the filename — anything else is silently ignored and Bash falls back to
+# the local /bin/bash. So we hand Claude the symlink "ssh-shell-bash" instead
+# of the real file.
+SHELL_WRAPPER="$PROJECT_DIR/bin/ssh-shell-bash"
+PROMPT_FILE="$PROJECT_DIR/prompts/REMOTE_PROMPT.md"
+
+usage() {
+  sed -n '3,15p' "$SELF"
+  exit "${1:-0}"
+}
+
+[[ $# -lt 1 ]] && usage 1
+case "$1" in
+  -h|--help) usage 0 ;;
+esac
+
+VM_HOST="$1"; shift
+
+TASK_FILE=""
+USE_PROMPT=1
+EXTRA_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --task)
+      TASK_FILE="$2"; shift 2 ;;
+    --no-prompt)
+      USE_PROMPT=0; shift ;;
+    --)
+      shift; EXTRA_ARGS=("$@"); break ;;
+    *)
+      EXTRA_ARGS+=("$1"); shift ;;
+  esac
+done
+
+# Sanity checks
+[[ -x "$SHELL_WRAPPER" ]] || { echo "remote-launcher: $SHELL_WRAPPER missing or not executable" >&2; exit 1; }
+[[ "$USE_PROMPT" -eq 0 || -f "$PROMPT_FILE" ]] || { echo "remote-launcher: $PROMPT_FILE not found" >&2; exit 1; }
+command -v claude >/dev/null || { echo "remote-launcher: 'claude' not found in PATH" >&2; exit 1; }
+
+# Test SSH connectivity (5s timeout, no password prompts)
+echo "[remote-launcher] testing SSH to $VM_HOST..."
+if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$VM_HOST" 'echo ok' >/dev/null 2>&1; then
+  echo "[remote-launcher] ERROR: cannot SSH to $VM_HOST (key auth, host reachable, ~/.ssh/config?)" >&2
+  exit 1
+fi
+
+# Compose system-prompt append text
+APPEND_PROMPT=""
+if [[ "$USE_PROMPT" -eq 1 ]]; then
+  APPEND_PROMPT="$(cat "$PROMPT_FILE")"
+fi
+if [[ -n "$TASK_FILE" ]]; then
+  [[ -f "$TASK_FILE" ]] || { echo "remote-launcher: task file $TASK_FILE not found" >&2; exit 1; }
+  APPEND_PROMPT+=$'\n\n---\n\n## User task\n\n'"$(cat "$TASK_FILE")"
+fi
+
+SESSION_ID="$$-$(date +%s)"
+
+echo "[remote-launcher] launching Claude Code (session $SESSION_ID); bash → $VM_HOST"
+echo "[remote-launcher] tip: another terminal + 'remote-launcher $VM_HOST' = parallel agent"
+
+CLAUDE_ARGS=()
+[[ -n "$APPEND_PROMPT" ]] && CLAUDE_ARGS+=(--append-system-prompt "$APPEND_PROMPT")
+# bash 3.2 (macOS) errors on "${EMPTY[@]}" under set -u — use the +alt form.
+[[ ${#EXTRA_ARGS[@]} -gt 0 ]] && CLAUDE_ARGS+=("${EXTRA_ARGS[@]}")
+
+exec env \
+  CLAUDE_CODE_SHELL="$SHELL_WRAPPER" \
+  CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 \
+  VM_REMOTE_HOST="$VM_HOST" \
+  VM_REMOTE_SESSION="$SESSION_ID" \
+  claude "${CLAUDE_ARGS[@]}"

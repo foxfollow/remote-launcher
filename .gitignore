@@ -1,0 +1,38 @@
+# === remote-launcher .gitignore ===
+
+# Test keys are generated fresh per run — never commit
+tests/.test-keys/*
+!tests/.test-keys/.gitkeep
+
+# Test artifacts
+tests/.test-output/
+tests/.test-ssh-config
+
+# Personal config / state
+.envrc
+.env
+*.local
+.DS_Store
+*.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Backup files
+*.bak
+*.orig
+
+# OS
+Thumbs.db
+
+# Logs
+*.log
+
+# Anything that even looks like a credential
+**/*.credentials*
+**/secrets.json
+**/*token*.txt
