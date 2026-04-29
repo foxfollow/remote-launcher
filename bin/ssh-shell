@@ -51,9 +51,10 @@ if [[ -n "${VM_SSH_OPTS:-}" ]]; then
   unset _EXTRA
 fi
 
-# Bootstrap: resolve $HOME on the VM if we don't have a cwd yet
+# Bootstrap: resolve $HOME on the VM if we don't have a cwd yet.
+# Use /bin/sh explicitly so tcsh (OPNsense/FreeBSD) doesn't interfere.
 if [[ ! -s "$CWD_FILE" ]]; then
-  if ! ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" 'echo $HOME' > "$CWD_FILE"; then
+  if ! ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "/bin/sh -c 'echo \$HOME'" > "$CWD_FILE"; then
     echo "ssh-shell: cannot connect to $VM_REMOTE_HOST (see ssh stderr above)" >&2
     exit 255
   fi
@@ -94,19 +95,23 @@ if [[ -z "$CMD" ]]; then
   exit 0
 fi
 
-# Run on remote in the main shell (no subshell — `cd` must persist into pwd capture).
-# Stdin is forwarded so heredocs in $CMD work.
-ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "
-cd '$CWD' 2>/dev/null || cd \$HOME
+# Build the remote script and base64-encode it so the remote login shell
+# (tcsh on OPNsense/FreeBSD, dash, etc.) never interprets the syntax.
+# We always exec /bin/sh explicitly on the far end.
+REMOTE_SCRIPT="cd '$CWD' 2>/dev/null || cd \$HOME
 $CMD
 __EC=\$?
 pwd > '$REMOTE_PWD_FILE' 2>/dev/null
-exit \$__EC
-"
+exit \$__EC"
+
+SCRIPT_B64=$(printf '%s\n' "$REMOTE_SCRIPT" | base64 | tr -d '\n')
+
+ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "/bin/sh -c 'printf %s $SCRIPT_B64 | base64 -d | /bin/sh'"
 EC=$?
 
 # Pull updated cwd back. ControlMaster makes this cheap.
-NEW_CWD=$(ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "cat '$REMOTE_PWD_FILE' 2>/dev/null" 2>/dev/null || true)
+# Wrap in /bin/sh so tcsh (OPNsense/FreeBSD) doesn't misparse 2>/dev/null.
+NEW_CWD=$(ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "/bin/sh -c 'cat $REMOTE_PWD_FILE 2>/dev/null'" 2>/dev/null || true)
 if [[ -n "$NEW_CWD" ]]; then
   printf '%s\n' "$NEW_CWD" > "$CWD_FILE"
 fi

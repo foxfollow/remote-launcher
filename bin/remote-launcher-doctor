@@ -7,6 +7,13 @@
 
 set -uo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  echo "Usage: remote-launcher-doctor [<ssh-host>]"
+  echo "  No args  — file/setup checks only"
+  echo "  <host>   — also runs live SSH + ssh-shell round-trip against that host"
+  exit 0
+fi
+
 SELF="${BASH_SOURCE[0]}"
 while [[ -L "$SELF" ]]; do SELF=$(readlink "$SELF"); done
 SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
