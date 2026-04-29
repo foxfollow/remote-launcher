@@ -39,6 +39,7 @@ SSH_OPTS=(
   -o "ControlPath=$SSH_CTL"
   -o "ControlPersist=15m"
   -o "BatchMode=yes"
+  -o "StrictHostKeyChecking=accept-new"
   -o "ServerAliveInterval=30"
   -o "ServerAliveCountMax=3"
   -T

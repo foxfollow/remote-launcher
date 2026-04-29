@@ -50,7 +50,7 @@ if [[ $# -ge 1 ]]; then
   echo
   echo "== live SSH + wrapper test against $HOST =="
 
-  if ssh -o ConnectTimeout=5 -o BatchMode=yes "$HOST" 'echo ok' >/dev/null 2>&1; then
+  if ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" 'echo ok' >/dev/null 2>&1; then
     ok "ssh $HOST 'echo ok'"
   else
     fail "ssh to $HOST (BatchMode, key auth)"
