@@ -6,6 +6,7 @@
 #   remote-launcher <ssh-host> --task FILE            # pre-load task into system prompt
 #   remote-launcher <ssh-host> --no-prompt            # skip REMOTE_PROMPT.md append
 #   remote-launcher <ssh-host> --confirm-bash         # require approval for every Bash call (default: auto-approve)
+#   remote-launcher <ssh-host> -pfp                   # auto-accept changed host fingerprints (alias: --proceedfingerprint)
 #   remote-launcher <ssh-host> -- <claude-args...>    # forward args to claude
 #
 # Examples:
@@ -43,6 +44,7 @@ VM_HOST="$1"; shift
 TASK_FILE=""
 USE_PROMPT=1
 AUTO_BASH=1
+PROCEED_FINGERPRINT=0
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -53,6 +55,8 @@ while [[ $# -gt 0 ]]; do
       USE_PROMPT=0; shift ;;
     --confirm-bash)
       AUTO_BASH=0; shift ;;
+    -pfp|--proceedfingerprint)
+      PROCEED_FINGERPRINT=1; shift ;;
     --)
       shift; EXTRA_ARGS=("$@"); break ;;
     *)
@@ -65,11 +69,41 @@ done
 [[ "$USE_PROMPT" -eq 0 || -f "$PROMPT_FILE" ]] || { echo "remote-launcher: $PROMPT_FILE not found" >&2; exit 1; }
 command -v claude >/dev/null || { echo "remote-launcher: 'claude' not found in PATH" >&2; exit 1; }
 
-# Test SSH connectivity (5s timeout, no password prompts)
+# Test SSH connectivity. Handle three cases:
+#   1. clean success → proceed
+#   2. host key changed (VM snapshot/recreate) → prompt user (or auto-accept with -pfp)
+#   3. anything else (unreachable, auth fail) → bail
 echo "[remote-launcher] testing SSH to $VM_HOST..."
-if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$VM_HOST" 'echo ok' >/dev/null 2>&1; then
-  echo "[remote-launcher] ERROR: cannot SSH to $VM_HOST (key auth, host reachable, ~/.ssh/config?)" >&2
-  exit 1
+ssh_err=$(ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$VM_HOST" 'echo ok' 2>&1 >/dev/null) && ssh_rc=0 || ssh_rc=$?
+
+if [[ $ssh_rc -ne 0 ]]; then
+  if echo "$ssh_err" | grep -qi "REMOTE HOST IDENTIFICATION HAS CHANGED"; then
+    resolved=$(ssh -G "$VM_HOST" 2>/dev/null | awk '$1=="hostname" {print $2; exit}')
+    resolved="${resolved:-$VM_HOST}"
+    echo "[remote-launcher] WARNING: host key for $VM_HOST ($resolved) has CHANGED." >&2
+    echo "$ssh_err" | grep -iE "fingerprint|offending" | sed 's/^/  /' >&2
+    if [[ "$PROCEED_FINGERPRINT" -eq 1 ]]; then
+      echo "[remote-launcher] -pfp set; replacing old host key automatically." >&2
+    else
+      printf "[remote-launcher] Accept new host key and continue? [Y/n] " >&2
+      read -r ans </dev/tty || ans="n"
+      case "$ans" in
+        n|N|no|No|NO) echo "[remote-launcher] aborted." >&2; exit 1 ;;
+      esac
+    fi
+    ssh-keygen -R "$resolved" >/dev/null 2>&1 || true
+    [[ "$resolved" != "$VM_HOST" ]] && ssh-keygen -R "$VM_HOST" >/dev/null 2>&1 || true
+    if ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$VM_HOST" 'echo ok' >/dev/null 2>&1; then
+      echo "[remote-launcher] new host key accepted; connection ok."
+    else
+      echo "[remote-launcher] ERROR: cannot SSH to $VM_HOST even after replacing host key" >&2
+      exit 1
+    fi
+  else
+    echo "[remote-launcher] ERROR: cannot SSH to $VM_HOST (key auth, host reachable, ~/.ssh/config?)" >&2
+    [[ -n "$ssh_err" ]] && echo "$ssh_err" | head -5 >&2
+    exit 1
+  fi
 fi
 
 # Compose system-prompt append text

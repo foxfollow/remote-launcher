@@ -52,6 +52,7 @@ Make sure `~/.local/bin` is in your `PATH`.
 remote-launcher myvm                                  # bare interactive
 remote-launcher myvm --task ~/projects/demo/TASK.md   # pre-load a task
 remote-launcher myvm --confirm-bash                   # require approval for every Bash call
+remote-launcher myvm -pfp                             # auto-accept changed host fingerprint (after VM snapshot/rebuild)
 remote-launcher myvm -- --model claude-opus-4-7       # forward args to claude
 ```
 

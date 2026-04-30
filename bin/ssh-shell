@@ -18,11 +18,37 @@
 
 set -uo pipefail
 
+# CRITICAL: break recursion before doing anything else.
+# Claude Code sets $SHELL to this wrapper so the Bash tool inherits it.
+# But SSH's ProxyCommand mechanism reads $SHELL to spawn the tunnel command
+# (`ssh -W host:port jumphost`). If $SHELL still points at us, every
+# ProxyJump invocation re-enters ssh-shell, opens another SSH back to the
+# same target, which itself does ProxyJump → infinite recursion. The remote
+# sshd hits MaxStartups and starts dropping connections, surfacing as
+# `kex_exchange_identification: Connection closed by remote host`.
+export SHELL=/bin/sh
+
 : "${VM_REMOTE_HOST:?ssh-shell: VM_REMOTE_HOST not set; launch via remote-launcher}"
 SESSION_ID="${VM_REMOTE_SESSION:-default}"
 
 STATE_DIR="${TMPDIR:-/tmp}/remote-launcher-${SESSION_ID}"
 mkdir -p "$STATE_DIR"
+
+# Debug log captures ssh stderr + invocation context whenever a bootstrap or
+# command call fails. Enabled by default; the file is overwritten per session.
+DEBUG_LOG="$STATE_DIR/ssh-shell.log"
+log_invocation() {
+  {
+    echo "===== $(date '+%Y-%m-%d %H:%M:%S') ssh-shell invocation ====="
+    echo "PID=$$  PPID=$PPID"
+    echo "ARGS: $*"
+    echo "PWD=$(pwd)"
+    echo "HOME=${HOME:-<unset>}"
+    echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-<unset>}"
+    echo "TMPDIR=${TMPDIR:-<unset>}"
+  } >> "$DEBUG_LOG" 2>/dev/null || true
+}
+log_invocation "$@"
 
 CWD_FILE="$STATE_DIR/cwd"
 # ControlPath has to be SHORT — Unix sockets cap at ~104 chars on macOS, and
@@ -54,9 +80,17 @@ fi
 
 # Bootstrap: resolve $HOME on the VM if we don't have a cwd yet.
 # Use /bin/sh explicitly so tcsh (OPNsense/FreeBSD) doesn't interfere.
+# Capture ssh stderr to the debug log so failures inside Claude Code surface
+# the actual SSH error (Claude only shows our wrapper's tail).
 if [[ ! -s "$CWD_FILE" ]]; then
-  if ! ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "/bin/sh -c 'echo \$HOME'" > "$CWD_FILE"; then
-    echo "ssh-shell: cannot connect to $VM_REMOTE_HOST (see ssh stderr above)" >&2
+  echo "--- bootstrap ssh stderr ---" >> "$DEBUG_LOG" 2>/dev/null || true
+  if ! ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "/bin/sh -c 'echo \$HOME'" > "$CWD_FILE" 2>>"$DEBUG_LOG"; then
+    {
+      echo "ssh-shell: cannot connect to $VM_REMOTE_HOST"
+      echo "ssh-shell: debug log → $DEBUG_LOG"
+      echo "--- last 20 lines of ssh stderr ---"
+      tail -n 20 "$DEBUG_LOG" 2>/dev/null
+    } >&2
     exit 255
   fi
 fi
