@@ -7,6 +7,7 @@
 #   remote-launcher <ssh-host> --no-prompt            # skip REMOTE_PROMPT.md append
 #   remote-launcher <ssh-host> --confirm-bash         # require approval for every Bash call (default: auto-approve)
 #   remote-launcher <ssh-host> -pfp                   # auto-accept changed host fingerprints (alias: --proceedfingerprint)
+#   remote-launcher <ssh-host> --shell <mode>         # auto | posix | powershell (default: auto)
 #   remote-launcher <ssh-host> -- <claude-args...>    # forward args to claude
 #
 # Examples:
@@ -27,10 +28,11 @@ PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 # the local /bin/bash. So we hand Claude the symlink "ssh-shell-bash" instead
 # of the real file.
 SHELL_WRAPPER="$PROJECT_DIR/bin/ssh-shell-bash"
-PROMPT_FILE="$PROJECT_DIR/prompts/REMOTE_PROMPT.md"
+PROMPT_FILE_POSIX="$PROJECT_DIR/prompts/REMOTE_PROMPT.md"
+PROMPT_FILE_POWERSHELL="$PROJECT_DIR/prompts/REMOTE_PROMPT_POWERSHELL.md"
 
 usage() {
-  sed -n '3,15p' "$SELF"
+  sed -n '3,16p' "$SELF"
   exit "${1:-0}"
 }
 
@@ -45,6 +47,7 @@ TASK_FILE=""
 USE_PROMPT=1
 AUTO_BASH=1
 PROCEED_FINGERPRINT=0
+SHELL_MODE="auto"
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -57,6 +60,8 @@ while [[ $# -gt 0 ]]; do
       AUTO_BASH=0; shift ;;
     -pfp|--proceedfingerprint)
       PROCEED_FINGERPRINT=1; shift ;;
+    --shell)
+      SHELL_MODE="$2"; shift 2 ;;
     --)
       shift; EXTRA_ARGS=("$@"); break ;;
     *)
@@ -64,9 +69,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+case "$SHELL_MODE" in
+  auto|posix|powershell) ;;
+  *) echo "remote-launcher: --shell must be auto|posix|powershell (got '$SHELL_MODE')" >&2; exit 1 ;;
+esac
+
 # Sanity checks
 [[ -x "$SHELL_WRAPPER" ]] || { echo "remote-launcher: $SHELL_WRAPPER missing or not executable" >&2; exit 1; }
-[[ "$USE_PROMPT" -eq 0 || -f "$PROMPT_FILE" ]] || { echo "remote-launcher: $PROMPT_FILE not found" >&2; exit 1; }
 command -v claude >/dev/null || { echo "remote-launcher: 'claude' not found in PATH" >&2; exit 1; }
 
 # Test SSH connectivity. Handle three cases:
@@ -106,6 +115,66 @@ if [[ $ssh_rc -ne 0 ]]; then
   fi
 fi
 
+# Detect remote shell flavor (or honor an explicit --shell choice).
+# We prefer doing this here (not inside ssh-shell) so we can pick the right
+# system-prompt addendum BEFORE Claude starts.
+PS_EXE=""
+SSH_DETECT_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+
+probe_posix() {
+  ssh "${SSH_DETECT_OPTS[@]}" "$VM_HOST" "/bin/sh -c 'echo __posix_ok__'" 2>/dev/null
+}
+probe_ps() {
+  ssh "${SSH_DETECT_OPTS[@]}" "$VM_HOST" "$1 -NoProfile -Command \"Write-Output __ps_ok__\"" 2>/dev/null
+}
+
+case "$SHELL_MODE" in
+  auto)
+    if [[ "$(probe_posix)" == *__posix_ok__* ]]; then
+      SHELL_MODE=posix
+    else
+      for cand in pwsh powershell; do
+        if [[ "$(probe_ps "$cand")" == *__ps_ok__* ]]; then
+          SHELL_MODE=powershell
+          PS_EXE="$cand"
+          break
+        fi
+      done
+    fi
+    if [[ "$SHELL_MODE" == "auto" ]]; then
+      echo "[remote-launcher] ERROR: could not detect remote shell on $VM_HOST" >&2
+      echo "[remote-launcher]   tried /bin/sh, pwsh, powershell — none responded" >&2
+      echo "[remote-launcher]   override with --shell posix|powershell if you know what's there" >&2
+      exit 1
+    fi
+    ;;
+  powershell)
+    for cand in pwsh powershell; do
+      if [[ "$(probe_ps "$cand")" == *__ps_ok__* ]]; then PS_EXE="$cand"; break; fi
+    done
+    if [[ -z "$PS_EXE" ]]; then
+      echo "[remote-launcher] ERROR: --shell powershell but neither pwsh nor powershell responded on $VM_HOST" >&2
+      exit 1
+    fi
+    ;;
+  posix)
+    if [[ "$(probe_posix)" != *__posix_ok__* ]]; then
+      echo "[remote-launcher] ERROR: --shell posix but /bin/sh did not respond on $VM_HOST" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+echo "[remote-launcher] remote shell: ${SHELL_MODE}${PS_EXE:+ ($PS_EXE)}"
+
+# Pick the right prompt addendum for the detected shell.
+if [[ "$SHELL_MODE" == "powershell" ]]; then
+  PROMPT_FILE="$PROMPT_FILE_POWERSHELL"
+else
+  PROMPT_FILE="$PROMPT_FILE_POSIX"
+fi
+[[ "$USE_PROMPT" -eq 0 || -f "$PROMPT_FILE" ]] || { echo "remote-launcher: $PROMPT_FILE not found" >&2; exit 1; }
+
 # Compose system-prompt append text
 APPEND_PROMPT=""
 if [[ "$USE_PROMPT" -eq 1 ]]; then
@@ -143,4 +212,6 @@ exec env \
   CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 \
   VM_REMOTE_HOST="$VM_HOST" \
   VM_REMOTE_SESSION="$SESSION_ID" \
+  VM_REMOTE_SHELL="$SHELL_MODE" \
+  VM_REMOTE_PS_EXE="$PS_EXE" \
   claude "${CLAUDE_ARGS[@]}"

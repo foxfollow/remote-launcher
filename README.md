@@ -53,8 +53,17 @@ remote-launcher myvm                                  # bare interactive
 remote-launcher myvm --task ~/projects/demo/TASK.md   # pre-load a task
 remote-launcher myvm --confirm-bash                   # require approval for every Bash call
 remote-launcher myvm -pfp                             # auto-accept changed host fingerprint (after VM snapshot/rebuild)
+remote-launcher winhost --shell powershell            # force PowerShell on the remote (default: auto-detect)
 remote-launcher myvm -- --model claude-opus-4-7       # forward args to claude
 ```
+
+**Remote shell flavor.** By default the launcher probes the host and picks
+between POSIX (`/bin/sh`) and PowerShell (`pwsh` or `powershell`). When it
+detects PowerShell, it loads a PowerShell-flavored system prompt so the
+model writes `Get-Content` / `Set-Content` / `Select-String` instead of
+`cat` / `grep` / `sed`, and runs commands via `-EncodedCommand` so quoting
+stays sane. Override with `--shell posix|powershell` if auto-detect picks
+wrong.
 
 **Bash auto-approve.** By default the launcher passes
 `--allowedTools 'Bash(*)'` to Claude so every Bash call runs without an
