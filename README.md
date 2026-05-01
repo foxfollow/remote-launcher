@@ -1,6 +1,6 @@
 # remote-launcher
 
-[![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.126-5A29E4)](https://code.claude.com/docs/en/changelog)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.126-orange)](https://code.claude.com/docs/en/changelog)
 ![os-macOS](https://img.shields.io/badge/OS-macOS-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
 

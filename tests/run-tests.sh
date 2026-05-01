@@ -22,7 +22,7 @@ for arg in "$@"; do
   esac
 done
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 TESTS_DIR="$(pwd)"
 PROJECT_DIR="$(cd .. && pwd)"
 
@@ -78,7 +78,7 @@ cleanup() {
   fi
   if [[ "$KEEP_KEYS" -eq 0 ]]; then
     rm -f "$KEY_FILE" "$PUB_FILE"
-    rm -rf "$KEY_DIR"/*  # leave .gitkeep
+    rm -rf "${KEY_DIR:?}"/*  # leave .gitkeep
     touch "$KEY_DIR/.gitkeep"
   fi
   rm -f "$SSH_CONFIG_FILE"
