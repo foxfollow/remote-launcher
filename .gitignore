@@ -37,3 +37,5 @@ Thumbs.db
 **/secrets.json
 **/*token*.txt
 .claude/scheduled_tasks.lock
+.claude/settings.local.json
+.claude/settings.*.json

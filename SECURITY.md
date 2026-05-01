@@ -32,7 +32,12 @@ Run `./tests/run-tests.sh` after any change to wrapper code.
 
 ## Reporting a vulnerability
 
-If you find a security issue, please open a GitHub issue marked `security` (private if the repo is private), or email the maintainer directly. **Do not** include credential samples or sensitive logs in public issues.
+If you find a security issue, please report it via one of:
+
+- **GitHub private security advisory** (preferred): use the *Security* tab → *Report a vulnerability* on this repo.
+- **Email**: [d3f0ld@pm.me](mailto:d3f0ld@pm.me?subject=remote-launcher%20security).
+
+**Do not** include credential samples or sensitive logs in public issues.
 
 ## Known limitations
 
