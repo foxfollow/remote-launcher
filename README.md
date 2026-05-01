@@ -1,5 +1,6 @@
 # remote-launcher
 
+[![ShellCheck](https://github.com/foxfollow/remote-launcher/actions/workflows/shellcheck.yml/badge.svg?branch=main)](https://github.com/foxfollow/remote-launcher/actions/workflows/shellcheck.yml)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.126-orange)](https://code.claude.com/docs/en/changelog)
 ![os-macOS](https://img.shields.io/badge/OS-macOS-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
