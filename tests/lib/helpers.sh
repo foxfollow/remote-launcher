@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Helpers used by case files.
 # $VM_HOST, $SSH_SHELL, $SSH_CONFIG_FILE are set by run-tests.sh.
 

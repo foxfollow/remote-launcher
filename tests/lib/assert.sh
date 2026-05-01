@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Minimal assertion lib.
 # Requires CASE_NAME to be set by the calling case file.
 
