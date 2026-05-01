@@ -1,5 +1,9 @@
 # remote-launcher
 
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.126-5A29E4)](https://code.claude.com/docs/en/changelog)
+![os-macOS](https://img.shields.io/badge/OS-macOS-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 Launch [Claude Code](https://www.anthropic.com/claude-code) on your Mac while transparently executing every Bash command on a remote Linux host via SSH. Anthropic credentials never touch the remote host.
 
 ## Why
@@ -30,7 +34,7 @@ The default Claude Code workflow for "operate on a remote box" is to install Cla
 ## Requirements
 
 - macOS (Apple Silicon recommended for the test harness; the launcher itself runs anywhere with `bash` + `ssh`)
-- Claude Code 2.0.65 or later
+- Claude Code 2.0.65 or later 
 - SSH key auth to your target host (no passwords, no agent forwarding by default)
 - For tests: [apple/container](https://github.com/apple/container) (macOS 26+) and `jq`
 
