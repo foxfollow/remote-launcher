@@ -1,6 +1,6 @@
 ---
 name: remote-launcher
-description: Use when the user wants to operate a remote Linux host from Claude Code on the Mac while keeping Anthropic credentials only on the Mac. Triggers include deploying multi-container labs on a remote VM, running multi-agent setups (e.g., "you are Agent 1") against a remote host, executing builds/tests/sysadmin on a target machine via SSH, working with infrastructure where files must live on the VM. Activation typically means telling the user to launch via `remote-launcher <host>` instead of plain `claude`. Do NOT use for local-only work or tasks that don't involve a target host.
+description: Use when the user wants to operate one or more remote Linux hosts from Claude Code on the Mac while keeping Anthropic credentials only on the Mac. Triggers include deploying multi-container labs on a remote VM, coordinating one agent across multiple VMs (e.g., web VM + DB VM), running multi-agent setups (e.g., "you are Agent 1") against a remote host, executing builds/tests/sysadmin on a target machine via SSH, working with infrastructure where files must live on the VM. Activation typically means telling the user to launch via `remote-launcher <host>` (or `remote-launcher host1 --host host2` for multi-host) instead of plain `claude`. Do NOT use for local-only work or tasks that don't involve a target host.
 ---
 
 # remote-launcher skill
@@ -24,7 +24,17 @@ Tell the user to launch via the launcher:
 remote-launcher <ssh-host>
 ```
 
-Or with their task pre-loaded:
+For multi-host (one agent coordinating across two or three VMs):
+
+```
+remote-launcher <host1> --host <host2> [--host <host3>]
+```
+
+Inside Claude, route a Bash call to a specific host with `@<host>` as the
+first token (e.g. `@host2 ls /var`). Without a prefix, the command goes to
+`<host1>` (the default).
+
+Or with a task pre-loaded:
 
 ```
 remote-launcher <ssh-host> --task ~/path/to/PROMPT.md

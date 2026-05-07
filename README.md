@@ -81,6 +81,40 @@ too (useful when the VM holds something you care about).
 A walkthrough of the simplest case (single agent installs nginx and
 verifies) is in [`examples/single-agent.md`](examples/single-agent.md).
 
+## Multi-host (one agent, multiple VMs)
+
+Give a single Claude session access to two or three VMs at once and let it
+coordinate between them. Useful when you have, say, a web VM and a DB VM and
+want one agent to set up the app on one and the schema on the other.
+
+```bash
+remote-launcher webvm --host dbvm                     # default=webvm, also dbvm
+remote-launcher webvm --host dbvm --host cachevm      # three hosts
+```
+
+Inside Claude, route a Bash call by prefixing it with `@<host>`:
+
+```
+@webvm  systemctl status nginx
+@dbvm   psql -c '\dt'
+hostname                # no prefix → goes to the default host (webvm)
+```
+
+The launcher injects a multi-host block into the system prompt listing the
+roster and rules. Each host has its own working directory, ControlMaster
+socket, and shell-mode cache — `cd /tmp` on `webvm` does not affect `dbvm`.
+Filesystems are independent: to move a file between hosts, the agent uses
+`scp` (host-to-host) or pulls to the Mac and pushes back.
+
+A worked example is in [`examples/multi-host.md`](examples/multi-host.md).
+
+### Roadmap
+
+- `--shared-workdir <path>` — auto-sync a Mac directory to all hosts so
+  Read/Edit/Write on the Mac propagates to every VM.
+- `@copy hostA:/path hostB:/path` helper for inter-host file transfer.
+- ProxyJump / bastion examples.
+
 ## Multi-agent
 
 Multiple Claude sessions, each in its own terminal, all targeting the

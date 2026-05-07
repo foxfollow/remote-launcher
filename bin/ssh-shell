@@ -4,15 +4,27 @@
 # preserving working directory between calls (per-session).
 #
 # Required env (set by remote-launcher):
-#   VM_REMOTE_HOST       — ssh destination (e.g. "user@vm" or alias from ~/.ssh/config)
+#   VM_REMOTE_HOST       — default ssh destination (single-host mode, or fallback)
 #   VM_REMOTE_SESSION    — unique id per remote-launcher invocation
 #
-# Optional env:
+# Optional env (multi-host mode, set by remote-launcher when >1 host):
+#   VM_REMOTE_HOSTS         — space-separated list of all hosts in this session
+#   VM_REMOTE_DEFAULT_HOST  — host used when CMD has no @host prefix
+#   VM_REMOTE_SHELLS        — colon-separated host=mode pairs (e.g. "h1=posix:h2=powershell")
+#   VM_REMOTE_PS_EXES       — colon-separated host=exe pairs (e.g. "h2=pwsh")
+#
+# Other optional env:
 #   VM_SSH_OPTS          — extra ssh options, space-separated (used by tests for -F config-file)
-#   VM_REMOTE_SHELL      — posix | powershell | auto (default: auto). When auto, the
-#                          first call probes the host and caches the result for the session.
+#   VM_REMOTE_SHELL      — posix | powershell | auto (default: auto). Default-host shell.
+#                          When auto, the first call probes the host and caches the result.
 #   VM_REMOTE_PS_EXE     — pwsh | powershell (default: pwsh, falling back to powershell).
-#                          Only consulted when VM_REMOTE_SHELL=powershell.
+#                          Only consulted when default host shell is powershell.
+#
+# Routing: if the model writes `@host2 ls /var`, the leading `@host2 ` token is
+# stripped and the command is sent to host2 (must be in VM_REMOTE_HOSTS).
+# Without a prefix, the command goes to VM_REMOTE_DEFAULT_HOST (or VM_REMOTE_HOST
+# in single-host mode). Per-host ControlMaster sockets and per-host CWD files
+# keep the sessions isolated.
 #
 # Notes:
 # - Uses SSH ControlMaster for connection reuse.
@@ -35,6 +47,34 @@ export SHELL=/bin/sh
 : "${VM_REMOTE_HOST:?ssh-shell: VM_REMOTE_HOST not set; launch via remote-launcher}"
 SESSION_ID="${VM_REMOTE_SESSION:-default}"
 
+# Multi-host metadata. VM_REMOTE_HOSTS is space-separated; default falls back
+# to VM_REMOTE_HOST so single-host invocations keep working unchanged.
+HOSTS_LIST="${VM_REMOTE_HOSTS:-$VM_REMOTE_HOST}"
+DEFAULT_HOST="${VM_REMOTE_DEFAULT_HOST:-$VM_REMOTE_HOST}"
+SHELLS_MAP="${VM_REMOTE_SHELLS:-}"
+PS_EXES_MAP="${VM_REMOTE_PS_EXES:-}"
+
+# host_in_list <name> — return 0 if <name> is in HOSTS_LIST.
+host_in_list() {
+  local needle="$1" h
+  for h in $HOSTS_LIST; do
+    [[ "$h" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+# lookup_map <map> <key> — print value for key from a "k=v:k=v" map, or empty.
+lookup_map() {
+  local map="$1" key="$2" entry
+  for entry in ${map//:/ }; do
+    if [[ "$entry" == "$key="* ]]; then
+      printf '%s' "${entry#*=}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 STATE_DIR="${TMPDIR:-/tmp}/remote-launcher-${SESSION_ID}"
 mkdir -p "$STATE_DIR"
 
@@ -56,131 +96,18 @@ log_invocation() {
 }
 log_invocation "$@"
 
-CWD_FILE="$STATE_DIR/cwd"
-SHELL_MODE_FILE="$STATE_DIR/shell-mode"
-PS_EXE_FILE="$STATE_DIR/ps-exe"
-
 # ControlPath has to be SHORT — Unix sockets cap at ~104 chars on macOS, and
 # OpenSSH appends a ~17-char random suffix. macOS $TMPDIR (~49 chars) plus our
 # session dir blows past the limit. Park the socket under ~/.ssh/ (already 0700,
 # already short).
 SOCK_DIR="$HOME/.ssh"
 mkdir -p "$SOCK_DIR"
-SSH_CTL="$SOCK_DIR/rl-${SESSION_ID}.s"
-REMOTE_PWD_BASENAME=".remote-launcher-cwd-${SESSION_ID}"
-REMOTE_PWD_FILE_POSIX="/tmp/${REMOTE_PWD_BASENAME}"
 
-SSH_OPTS=(
-  -o "ControlMaster=auto"
-  -o "ControlPath=$SSH_CTL"
-  -o "ControlPersist=15m"
-  -o "BatchMode=yes"
-  -o "StrictHostKeyChecking=accept-new"
-  -o "ServerAliveInterval=30"
-  -o "ServerAliveCountMax=3"
-  -T
-)
-
-# Append optional extra SSH options (used by tests, advanced users)
-if [[ -n "${VM_SSH_OPTS:-}" ]]; then
-  read -ra _EXTRA <<< "$VM_SSH_OPTS"
-  SSH_OPTS+=("${_EXTRA[@]}")
-  unset _EXTRA
-fi
-
-# ---------- Shell-mode resolution ----------
-# Order of precedence:
-#   1. Cached value in $SHELL_MODE_FILE (set during this session's first call)
-#   2. VM_REMOTE_SHELL env var (posix | powershell | auto)
-#   3. Default: auto (probe on first call)
-SHELL_MODE=""
-PS_EXE=""
-
-if [[ -s "$SHELL_MODE_FILE" ]]; then
-  SHELL_MODE=$(<"$SHELL_MODE_FILE")
-  [[ -s "$PS_EXE_FILE" ]] && PS_EXE=$(<"$PS_EXE_FILE")
-fi
-
-if [[ -z "$SHELL_MODE" ]]; then
-  case "${VM_REMOTE_SHELL:-auto}" in
-    posix|powershell|auto) SHELL_MODE="${VM_REMOTE_SHELL:-auto}" ;;
-    *)
-      echo "ssh-shell: invalid VM_REMOTE_SHELL='${VM_REMOTE_SHELL}' (expected posix|powershell|auto)" >&2
-      exit 2
-      ;;
-  esac
-fi
-
-if [[ "$SHELL_MODE" == "powershell" && -z "$PS_EXE" ]]; then
-  PS_EXE="${VM_REMOTE_PS_EXE:-pwsh}"
-fi
-
-probe_posix() {
-  ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "/bin/sh -c 'echo __posix_ok__'" 2>>"$DEBUG_LOG"
+# host_slug <host> — sanitize a host for use in filenames (replace
+# non-alphanumeric with '_'). user@host → user_host, etc.
+host_slug() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
 }
-
-probe_ps() {
-  # $1 = pwsh|powershell
-  ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "$1 -NoProfile -Command \"Write-Output __ps_ok__\"" 2>>"$DEBUG_LOG"
-}
-
-# Bootstrap: resolve $HOME on the VM if we don't have a cwd yet.
-# Capture ssh stderr to the debug log so failures inside Claude Code surface
-# the actual SSH error (Claude only shows our wrapper's tail).
-if [[ ! -s "$CWD_FILE" ]]; then
-  echo "--- bootstrap ssh stderr ---" >> "$DEBUG_LOG" 2>/dev/null || true
-
-  bootstrap_failed=0
-
-  # Auto-detect if requested.
-  if [[ "$SHELL_MODE" == "auto" ]]; then
-    out=$(probe_posix || true)
-    if [[ "$out" == *"__posix_ok__"* ]]; then
-      SHELL_MODE=posix
-    else
-      for cand in pwsh powershell; do
-        out=$(probe_ps "$cand" || true)
-        if [[ "$out" == *"__ps_ok__"* ]]; then
-          SHELL_MODE=powershell
-          PS_EXE="$cand"
-          break
-        fi
-      done
-    fi
-    if [[ "$SHELL_MODE" == "auto" ]]; then
-      bootstrap_failed=1
-    fi
-  fi
-
-  if [[ "$bootstrap_failed" -eq 0 ]]; then
-    if [[ "$SHELL_MODE" == "powershell" ]]; then
-      # PowerShell: $HOME is an automatic variable on both Windows PS 5.1 and pwsh 7+.
-      CWD_RAW=$(ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "$PS_EXE -NoProfile -Command \"Write-Output \$HOME\"" 2>>"$DEBUG_LOG") || bootstrap_failed=1
-      CWD_RAW=$(printf '%s' "$CWD_RAW" | tr -d '\r' | head -n1)
-    else
-      CWD_RAW=$(ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "/bin/sh -c 'echo \$HOME'" 2>>"$DEBUG_LOG") || bootstrap_failed=1
-    fi
-    [[ -z "$CWD_RAW" ]] && bootstrap_failed=1
-  fi
-
-  if [[ "$bootstrap_failed" -ne 0 ]]; then
-    {
-      echo "ssh-shell: cannot connect to $VM_REMOTE_HOST"
-      echo "ssh-shell: shell mode = ${SHELL_MODE:-<unresolved>}${PS_EXE:+ ($PS_EXE)}"
-      echo "ssh-shell: debug log → $DEBUG_LOG"
-      echo "--- last 30 lines of ssh stderr ---"
-      tail -n 30 "$DEBUG_LOG" 2>/dev/null
-    } >&2
-    exit 255
-  fi
-
-  printf '%s\n' "$CWD_RAW" > "$CWD_FILE"
-  printf '%s\n' "$SHELL_MODE" > "$SHELL_MODE_FILE"
-  [[ -n "$PS_EXE" ]] && printf '%s\n' "$PS_EXE" > "$PS_EXE_FILE"
-fi
-
-CWD=$(<"$CWD_FILE")
-[[ -z "$CWD" ]] && CWD='$HOME'
 
 # Parse args bash-style. Claude Code 2.1.x invokes the shell as
 # `<shell> -c -l <cmd>` (-c first, then -l, then the command string).
@@ -214,6 +141,185 @@ done
 if [[ -z "$CMD" ]]; then
   exit 0
 fi
+
+# ---------- @host prefix routing ----------
+# Claude Code 2.1.x wraps the model's command in:
+#   shopt -u extglob 2>/dev/null || true && eval '<inner>' < /dev/null && pwd -P >| /tmp/claude-<hash>-cwd
+# We need to peek at <inner> for the @host prefix BEFORE deciding which host
+# to dispatch to (the prefix is part of what the model wrote, not the wrapper).
+PREFIX_INNER=""
+PREFIX_WRAPPER=""    # "" if CMD wasn't wrapped; otherwise the bash prelude part to keep
+PREFIX_TAIL=""       # "" if CMD wasn't wrapped; otherwise the trailing "' < /dev/null …" part
+if [[ "$CMD" == "shopt -u extglob 2>/dev/null || true && eval '"* ]]; then
+  PREFIX_WRAPPER="shopt -u extglob 2>/dev/null || true && eval '"
+  inner_tmp="${CMD#shopt -u extglob 2>/dev/null || true && eval \'}"
+  # Trailing portion: from the last "' < /dev/null" onward.
+  PREFIX_TAIL="${inner_tmp##*\' < /dev/null}"
+  PREFIX_TAIL="' < /dev/null${PREFIX_TAIL}"
+  PREFIX_INNER="${inner_tmp%"$PREFIX_TAIL"}"
+  # Un-escape bash's '\'' (close-quote, escaped-quote, open-quote) → real '
+  PREFIX_INNER_UNESCAPED="${PREFIX_INNER//\'\\\'\'/\'}"
+else
+  PREFIX_INNER_UNESCAPED="$CMD"
+fi
+
+# Strip optional leading whitespace then check for @host prefix.
+trimmed="${PREFIX_INNER_UNESCAPED#"${PREFIX_INNER_UNESCAPED%%[![:space:]]*}"}"
+TARGET_HOST=""
+if [[ "$trimmed" == @* ]]; then
+  # First word after @
+  rest="${trimmed#@}"
+  prefix_host="${rest%%[[:space:]]*}"
+  if [[ -z "$prefix_host" ]]; then
+    : # bare "@" — let it fall through as default host (will likely fail at remote)
+  elif host_in_list "$prefix_host"; then
+    TARGET_HOST="$prefix_host"
+    # Strip "@host" + following whitespace from the inner command. If the
+    # original CMD was wrapped by Claude's prelude, re-wrap with the same
+    # quoting so cwd capture etc. still works.
+    new_inner="${rest#"$prefix_host"}"
+    new_inner="${new_inner#"${new_inner%%[![:space:]]*}"}"
+    if [[ -n "$PREFIX_WRAPPER" ]]; then
+      # Re-escape single quotes back to bash's '\'' form.
+      escaped="${new_inner//\'/\'\\\'\'}"
+      CMD="${PREFIX_WRAPPER}${escaped}${PREFIX_TAIL}"
+    else
+      CMD="$new_inner"
+    fi
+  else
+    # Unknown host — fail loudly without dispatching anywhere. Build a
+    # comma-separated list for the error message.
+    avail=""
+    for h in $HOSTS_LIST; do avail+="${avail:+, }$h"; done
+    {
+      echo "ssh-shell: unknown host '@$prefix_host'"
+      echo "ssh-shell: available hosts: $avail"
+      echo "ssh-shell: (default host without prefix: $DEFAULT_HOST)"
+    } >&2
+    exit 2
+  fi
+fi
+[[ -z "$TARGET_HOST" ]] && TARGET_HOST="$DEFAULT_HOST"
+
+# ---------- Per-host paths and shell mode ----------
+TARGET_SLUG=$(host_slug "$TARGET_HOST")
+CWD_FILE="$STATE_DIR/cwd-$TARGET_SLUG"
+SHELL_MODE_FILE="$STATE_DIR/shell-mode-$TARGET_SLUG"
+PS_EXE_FILE="$STATE_DIR/ps-exe-$TARGET_SLUG"
+SSH_CTL="$SOCK_DIR/rl-${SESSION_ID}-${TARGET_SLUG}.s"
+REMOTE_PWD_BASENAME=".remote-launcher-cwd-${SESSION_ID}-${TARGET_SLUG}"
+REMOTE_PWD_FILE_POSIX="/tmp/${REMOTE_PWD_BASENAME}"
+
+SSH_OPTS=(
+  -o "ControlMaster=auto"
+  -o "ControlPath=$SSH_CTL"
+  -o "ControlPersist=15m"
+  -o "BatchMode=yes"
+  -o "StrictHostKeyChecking=accept-new"
+  -o "ServerAliveInterval=30"
+  -o "ServerAliveCountMax=3"
+  -T
+)
+if [[ -n "${VM_SSH_OPTS:-}" ]]; then
+  read -ra _EXTRA <<< "$VM_SSH_OPTS"
+  SSH_OPTS+=("${_EXTRA[@]}")
+  unset _EXTRA
+fi
+
+# Resolve shell mode for this host. Precedence:
+#   1. Cached file (set on first call this session)
+#   2. Per-host mapping VM_REMOTE_SHELLS / VM_REMOTE_PS_EXES (set by remote-launcher)
+#   3. Single-host fallback VM_REMOTE_SHELL / VM_REMOTE_PS_EXE
+#   4. auto (probe on first call)
+SHELL_MODE=""
+PS_EXE=""
+
+if [[ -s "$SHELL_MODE_FILE" ]]; then
+  SHELL_MODE=$(<"$SHELL_MODE_FILE")
+  [[ -s "$PS_EXE_FILE" ]] && PS_EXE=$(<"$PS_EXE_FILE")
+fi
+
+if [[ -z "$SHELL_MODE" ]]; then
+  mapped_shell=$(lookup_map "$SHELLS_MAP" "$TARGET_HOST" || true)
+  if [[ -n "$mapped_shell" ]]; then
+    SHELL_MODE="$mapped_shell"
+  else
+    case "${VM_REMOTE_SHELL:-auto}" in
+      posix|powershell|auto) SHELL_MODE="${VM_REMOTE_SHELL:-auto}" ;;
+      *)
+        echo "ssh-shell: invalid VM_REMOTE_SHELL='${VM_REMOTE_SHELL}' (expected posix|powershell|auto)" >&2
+        exit 2
+        ;;
+    esac
+  fi
+fi
+
+if [[ "$SHELL_MODE" == "powershell" && -z "$PS_EXE" ]]; then
+  mapped_ps=$(lookup_map "$PS_EXES_MAP" "$TARGET_HOST" || true)
+  PS_EXE="${mapped_ps:-${VM_REMOTE_PS_EXE:-pwsh}}"
+fi
+
+probe_posix() {
+  ssh "${SSH_OPTS[@]}" "$TARGET_HOST" "/bin/sh -c 'echo __posix_ok__'" 2>>"$DEBUG_LOG"
+}
+
+probe_ps() {
+  ssh "${SSH_OPTS[@]}" "$TARGET_HOST" "$1 -NoProfile -Command \"Write-Output __ps_ok__\"" 2>>"$DEBUG_LOG"
+}
+
+# Bootstrap: resolve $HOME on this host if we don't have a cwd yet.
+if [[ ! -s "$CWD_FILE" ]]; then
+  echo "--- bootstrap ssh stderr ($TARGET_HOST) ---" >> "$DEBUG_LOG" 2>/dev/null || true
+
+  bootstrap_failed=0
+
+  if [[ "$SHELL_MODE" == "auto" ]]; then
+    out=$(probe_posix || true)
+    if [[ "$out" == *"__posix_ok__"* ]]; then
+      SHELL_MODE=posix
+    else
+      for cand in pwsh powershell; do
+        out=$(probe_ps "$cand" || true)
+        if [[ "$out" == *"__ps_ok__"* ]]; then
+          SHELL_MODE=powershell
+          PS_EXE="$cand"
+          break
+        fi
+      done
+    fi
+    if [[ "$SHELL_MODE" == "auto" ]]; then
+      bootstrap_failed=1
+    fi
+  fi
+
+  if [[ "$bootstrap_failed" -eq 0 ]]; then
+    if [[ "$SHELL_MODE" == "powershell" ]]; then
+      CWD_RAW=$(ssh "${SSH_OPTS[@]}" "$TARGET_HOST" "$PS_EXE -NoProfile -Command \"Write-Output \$HOME\"" 2>>"$DEBUG_LOG") || bootstrap_failed=1
+      CWD_RAW=$(printf '%s' "$CWD_RAW" | tr -d '\r' | head -n1)
+    else
+      CWD_RAW=$(ssh "${SSH_OPTS[@]}" "$TARGET_HOST" "/bin/sh -c 'echo \$HOME'" 2>>"$DEBUG_LOG") || bootstrap_failed=1
+    fi
+    [[ -z "$CWD_RAW" ]] && bootstrap_failed=1
+  fi
+
+  if [[ "$bootstrap_failed" -ne 0 ]]; then
+    {
+      echo "ssh-shell: cannot connect to $TARGET_HOST"
+      echo "ssh-shell: shell mode = ${SHELL_MODE:-<unresolved>}${PS_EXE:+ ($PS_EXE)}"
+      echo "ssh-shell: debug log → $DEBUG_LOG"
+      echo "--- last 30 lines of ssh stderr ---"
+      tail -n 30 "$DEBUG_LOG" 2>/dev/null
+    } >&2
+    exit 255
+  fi
+
+  printf '%s\n' "$CWD_RAW" > "$CWD_FILE"
+  printf '%s\n' "$SHELL_MODE" > "$SHELL_MODE_FILE"
+  [[ -n "$PS_EXE" ]] && printf '%s\n' "$PS_EXE" > "$PS_EXE_FILE"
+fi
+
+CWD=$(<"$CWD_FILE")
+[[ -z "$CWD" ]] && CWD='$HOME'
 
 if [[ "$SHELL_MODE" == "powershell" ]]; then
   # ---------- PowerShell execution path ----------
@@ -261,10 +367,10 @@ PSEOF
   # PowerShell -EncodedCommand expects UTF-16LE base64. macOS ships iconv.
   PS_B64=$(printf '%s' "$PS_SCRIPT" | iconv -t UTF-16LE | base64 | tr -d '\n')
 
-  ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "$PS_EXE -NoProfile -EncodedCommand $PS_B64"
+  ssh "${SSH_OPTS[@]}" "$TARGET_HOST" "$PS_EXE -NoProfile -EncodedCommand $PS_B64"
   EC=$?
 
-  NEW_CWD=$(ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" \
+  NEW_CWD=$(ssh "${SSH_OPTS[@]}" "$TARGET_HOST" \
     "$PS_EXE -NoProfile -Command \"Get-Content -Raw (Join-Path \$env:TEMP '$REMOTE_PWD_BASENAME')\"" \
     2>/dev/null | tr -d '\r' | tr -d '\n' || true)
 else
@@ -280,12 +386,12 @@ exit \$__EC"
 
   SCRIPT_B64=$(printf '%s\n' "$REMOTE_SCRIPT" | base64 | tr -d '\n')
 
-  ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "/bin/sh -c 'printf %s $SCRIPT_B64 | base64 -d | /bin/sh'"
+  ssh "${SSH_OPTS[@]}" "$TARGET_HOST" "/bin/sh -c 'printf %s $SCRIPT_B64 | base64 -d | /bin/sh'"
   EC=$?
 
   # Pull updated cwd back. ControlMaster makes this cheap.
   # Wrap in /bin/sh so tcsh (OPNsense/FreeBSD) doesn't misparse 2>/dev/null.
-  NEW_CWD=$(ssh "${SSH_OPTS[@]}" "$VM_REMOTE_HOST" "/bin/sh -c 'cat $REMOTE_PWD_FILE_POSIX 2>/dev/null'" 2>/dev/null || true)
+  NEW_CWD=$(ssh "${SSH_OPTS[@]}" "$TARGET_HOST" "/bin/sh -c 'cat $REMOTE_PWD_FILE_POSIX 2>/dev/null'" 2>/dev/null || true)
 fi
 
 if [[ -n "$NEW_CWD" ]]; then

@@ -2,7 +2,8 @@
 # remote-launcher — launch Claude Code with Bash redirected to a remote host via SSH.
 #
 # Usage:
-#   remote-launcher <ssh-host>                        # bare interactive
+#   remote-launcher <ssh-host>                        # bare interactive (single host)
+#   remote-launcher <ssh-host> --host <ssh-host2>     # multi-host; repeatable
 #   remote-launcher <ssh-host> --task FILE            # pre-load task into system prompt
 #   remote-launcher <ssh-host> --no-prompt            # skip REMOTE_PROMPT.md append
 #   remote-launcher <ssh-host> --confirm-bash         # require approval for every Bash call (default: auto-approve)
@@ -10,9 +11,17 @@
 #   remote-launcher <ssh-host> --shell <mode>         # auto | posix | powershell (default: auto)
 #   remote-launcher <ssh-host> -- <claude-args...>    # forward args to claude
 #
+# Multi-host: the first positional is the DEFAULT host (Bash calls without a
+# prefix go there). Additional hosts are added via repeated --host flags. Inside
+# Claude, route a Bash call by prefixing it with `@<host> ` (e.g. `@host2 ls`).
+#
+# TODO: --shared-workdir <path> — auto-sync a Mac directory to all hosts so
+# Read/Edit/Write on the Mac propagates to every VM. See README "Roadmap".
+#
 # Examples:
 #   remote-launcher myvm
 #   remote-launcher user@10.0.0.5 --task ~/projects/demo/TASK.md
+#   remote-launcher webvm --host dbvm                 # default=webvm, also dbvm
 #   remote-launcher myvm -- --model claude-opus-4-7
 
 set -euo pipefail
@@ -32,7 +41,7 @@ PROMPT_FILE_POSIX="$PROJECT_DIR/prompts/REMOTE_PROMPT.md"
 PROMPT_FILE_POWERSHELL="$PROJECT_DIR/prompts/REMOTE_PROMPT_POWERSHELL.md"
 
 usage() {
-  sed -n '3,16p' "$SELF"
+  sed -n '3,26p' "$SELF"
   exit "${1:-0}"
 }
 
@@ -48,10 +57,14 @@ USE_PROMPT=1
 AUTO_BASH=1
 PROCEED_FINGERPRINT=0
 SHELL_MODE="auto"
+EXTRA_HOSTS=()
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --host)
+      [[ -n "${2:-}" ]] || { echo "remote-launcher: --host requires a value" >&2; exit 1; }
+      EXTRA_HOSTS+=("$2"); shift 2 ;;
     --task)
       TASK_FILE="$2"; shift 2 ;;
     --no-prompt)
@@ -69,6 +82,31 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Build full host list. First positional is the default host (where bash calls
+# without an @host prefix go); --host flags add more.
+HOSTS=("$VM_HOST")
+[[ ${#EXTRA_HOSTS[@]} -gt 0 ]] && HOSTS+=("${EXTRA_HOSTS[@]}")
+
+# Validate host names: @ prefix routing in ssh-shell relies on plain tokens
+# (no spaces, no leading @). user@host form is fine — checked by no leading @.
+for h in "${HOSTS[@]}"; do
+  if [[ "$h" == @* || "$h" == *" "* ]]; then
+    echo "remote-launcher: invalid host name '$h' (no leading @, no spaces)" >&2
+    exit 1
+  fi
+done
+
+# Detect duplicate host names — would collide on ControlMaster sockets and
+# CWD files. Error rather than silently merge.
+for ((i=0; i<${#HOSTS[@]}; i++)); do
+  for ((j=i+1; j<${#HOSTS[@]}; j++)); do
+    if [[ "${HOSTS[i]}" == "${HOSTS[j]}" ]]; then
+      echo "remote-launcher: duplicate host '${HOSTS[i]}' in host list" >&2
+      exit 1
+    fi
+  done
+done
+
 case "$SHELL_MODE" in
   auto|posix|powershell) ;;
   *) echo "remote-launcher: --shell must be auto|posix|powershell (got '$SHELL_MODE')" >&2; exit 1 ;;
@@ -78,97 +116,145 @@ esac
 [[ -x "$SHELL_WRAPPER" ]] || { echo "remote-launcher: $SHELL_WRAPPER missing or not executable" >&2; exit 1; }
 command -v claude >/dev/null || { echo "remote-launcher: 'claude' not found in PATH" >&2; exit 1; }
 
-# Test SSH connectivity. Handle three cases:
+SSH_DETECT_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+
+probe_posix() {
+  # $1 = host
+  ssh "${SSH_DETECT_OPTS[@]}" "$1" "/bin/sh -c 'echo __posix_ok__'" 2>/dev/null
+}
+probe_ps() {
+  # $1 = host, $2 = pwsh|powershell
+  ssh "${SSH_DETECT_OPTS[@]}" "$1" "$2 -NoProfile -Command \"Write-Output __ps_ok__\"" 2>/dev/null
+}
+
+# Test SSH connectivity per host. Handle three cases:
 #   1. clean success → proceed
 #   2. host key changed (VM snapshot/recreate) → prompt user (or auto-accept with -pfp)
 #   3. anything else (unreachable, auth fail) → bail
-echo "[remote-launcher] testing SSH to $VM_HOST..."
-ssh_err=$(ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$VM_HOST" 'echo ok' 2>&1 >/dev/null) && ssh_rc=0 || ssh_rc=$?
+ssh_preflight() {
+  local host="$1"
+  local ssh_err ssh_rc resolved ans
+  echo "[remote-launcher] testing SSH to $host..."
+  ssh_err=$(ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$host" 'echo ok' 2>&1 >/dev/null) && ssh_rc=0 || ssh_rc=$?
 
-if [[ $ssh_rc -ne 0 ]]; then
+  if [[ $ssh_rc -eq 0 ]]; then
+    return 0
+  fi
+
   if echo "$ssh_err" | grep -qi "REMOTE HOST IDENTIFICATION HAS CHANGED"; then
-    resolved=$(ssh -G "$VM_HOST" 2>/dev/null | awk '$1=="hostname" {print $2; exit}')
-    resolved="${resolved:-$VM_HOST}"
-    echo "[remote-launcher] WARNING: host key for $VM_HOST ($resolved) has CHANGED." >&2
+    resolved=$(ssh -G "$host" 2>/dev/null | awk '$1=="hostname" {print $2; exit}')
+    resolved="${resolved:-$host}"
+    echo "[remote-launcher] WARNING: host key for $host ($resolved) has CHANGED." >&2
     echo "$ssh_err" | grep -iE "fingerprint|offending" | sed 's/^/  /' >&2
     if [[ "$PROCEED_FINGERPRINT" -eq 1 ]]; then
       echo "[remote-launcher] -pfp set; replacing old host key automatically." >&2
     else
-      printf "[remote-launcher] Accept new host key and continue? [Y/n] " >&2
+      printf "[remote-launcher] Accept new host key for %s and continue? [Y/n] " "$host" >&2
       read -r ans </dev/tty || ans="n"
       case "$ans" in
         n|N|no|No|NO) echo "[remote-launcher] aborted." >&2; exit 1 ;;
       esac
     fi
     ssh-keygen -R "$resolved" >/dev/null 2>&1 || true
-    [[ "$resolved" != "$VM_HOST" ]] && ssh-keygen -R "$VM_HOST" >/dev/null 2>&1 || true
-    if ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$VM_HOST" 'echo ok' >/dev/null 2>&1; then
-      echo "[remote-launcher] new host key accepted; connection ok."
+    [[ "$resolved" != "$host" ]] && ssh-keygen -R "$host" >/dev/null 2>&1 || true
+    if ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$host" 'echo ok' >/dev/null 2>&1; then
+      echo "[remote-launcher] new host key accepted for $host."
     else
-      echo "[remote-launcher] ERROR: cannot SSH to $VM_HOST even after replacing host key" >&2
+      echo "[remote-launcher] ERROR: cannot SSH to $host even after replacing host key" >&2
       exit 1
     fi
   else
-    echo "[remote-launcher] ERROR: cannot SSH to $VM_HOST (key auth, host reachable, ~/.ssh/config?)" >&2
+    echo "[remote-launcher] ERROR: cannot SSH to $host (key auth, host reachable, ~/.ssh/config?)" >&2
     [[ -n "$ssh_err" ]] && echo "$ssh_err" | head -5 >&2
     exit 1
   fi
-fi
-
-# Detect remote shell flavor (or honor an explicit --shell choice).
-# We prefer doing this here (not inside ssh-shell) so we can pick the right
-# system-prompt addendum BEFORE Claude starts.
-PS_EXE=""
-SSH_DETECT_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
-
-probe_posix() {
-  ssh "${SSH_DETECT_OPTS[@]}" "$VM_HOST" "/bin/sh -c 'echo __posix_ok__'" 2>/dev/null
-}
-probe_ps() {
-  ssh "${SSH_DETECT_OPTS[@]}" "$VM_HOST" "$1 -NoProfile -Command \"Write-Output __ps_ok__\"" 2>/dev/null
 }
 
-case "$SHELL_MODE" in
-  auto)
-    if [[ "$(probe_posix)" == *__posix_ok__* ]]; then
-      SHELL_MODE=posix
-    else
+# Detect remote shell flavor for one host (or honor an explicit --shell choice).
+# Stores result via globals: DETECTED_SHELL, DETECTED_PS_EXE.
+detect_shell_for_host() {
+  local host="$1"
+  local mode="$SHELL_MODE"
+  DETECTED_SHELL=""
+  DETECTED_PS_EXE=""
+
+  case "$mode" in
+    auto)
+      if [[ "$(probe_posix "$host")" == *__posix_ok__* ]]; then
+        DETECTED_SHELL=posix
+      else
+        for cand in pwsh powershell; do
+          if [[ "$(probe_ps "$host" "$cand")" == *__ps_ok__* ]]; then
+            DETECTED_SHELL=powershell
+            DETECTED_PS_EXE="$cand"
+            break
+          fi
+        done
+      fi
+      if [[ -z "$DETECTED_SHELL" ]]; then
+        echo "[remote-launcher] ERROR: could not detect remote shell on $host" >&2
+        echo "[remote-launcher]   tried /bin/sh, pwsh, powershell — none responded" >&2
+        echo "[remote-launcher]   override with --shell posix|powershell if you know what's there" >&2
+        exit 1
+      fi
+      ;;
+    powershell)
+      DETECTED_SHELL=powershell
       for cand in pwsh powershell; do
-        if [[ "$(probe_ps "$cand")" == *__ps_ok__* ]]; then
-          SHELL_MODE=powershell
-          PS_EXE="$cand"
-          break
-        fi
+        if [[ "$(probe_ps "$host" "$cand")" == *__ps_ok__* ]]; then DETECTED_PS_EXE="$cand"; break; fi
       done
-    fi
-    if [[ "$SHELL_MODE" == "auto" ]]; then
-      echo "[remote-launcher] ERROR: could not detect remote shell on $VM_HOST" >&2
-      echo "[remote-launcher]   tried /bin/sh, pwsh, powershell — none responded" >&2
-      echo "[remote-launcher]   override with --shell posix|powershell if you know what's there" >&2
-      exit 1
-    fi
-    ;;
-  powershell)
-    for cand in pwsh powershell; do
-      if [[ "$(probe_ps "$cand")" == *__ps_ok__* ]]; then PS_EXE="$cand"; break; fi
-    done
-    if [[ -z "$PS_EXE" ]]; then
-      echo "[remote-launcher] ERROR: --shell powershell but neither pwsh nor powershell responded on $VM_HOST" >&2
-      exit 1
-    fi
-    ;;
-  posix)
-    if [[ "$(probe_posix)" != *__posix_ok__* ]]; then
-      echo "[remote-launcher] ERROR: --shell posix but /bin/sh did not respond on $VM_HOST" >&2
-      exit 1
-    fi
-    ;;
-esac
+      if [[ -z "$DETECTED_PS_EXE" ]]; then
+        echo "[remote-launcher] ERROR: --shell powershell but neither pwsh nor powershell responded on $host" >&2
+        exit 1
+      fi
+      ;;
+    posix)
+      DETECTED_SHELL=posix
+      if [[ "$(probe_posix "$host")" != *__posix_ok__* ]]; then
+        echo "[remote-launcher] ERROR: --shell posix but /bin/sh did not respond on $host" >&2
+        exit 1
+      fi
+      ;;
+  esac
+}
 
-echo "[remote-launcher] remote shell: ${SHELL_MODE}${PS_EXE:+ ($PS_EXE)}"
+# Per-host loop: SSH preflight + shell detection. Build encoded maps for the
+# wrapper. VM_REMOTE_SHELLS / VM_REMOTE_PS_EXES use ':' to separate entries
+# and '=' between host and value (host names cannot contain ':' or '=' in any
+# realistic ssh config alias, and we forbid spaces above).
+SHELLS_MAP=""
+PS_EXES_MAP=""
+for h in "${HOSTS[@]}"; do
+  ssh_preflight "$h"
+  detect_shell_for_host "$h"
+  echo "[remote-launcher] $h shell: ${DETECTED_SHELL}${DETECTED_PS_EXE:+ ($DETECTED_PS_EXE)}"
+  SHELLS_MAP+="${SHELLS_MAP:+:}$h=$DETECTED_SHELL"
+  [[ -n "$DETECTED_PS_EXE" ]] && PS_EXES_MAP+="${PS_EXES_MAP:+:}$h=$DETECTED_PS_EXE"
+done
 
-# Pick the right prompt addendum for the detected shell.
-if [[ "$SHELL_MODE" == "powershell" ]]; then
+# Default host is the first in the list. The system-prompt addendum is chosen
+# based on the default host's shell flavour. (For mixed POSIX/PowerShell
+# fleets, the agent gets the prompt for the default host's shell; the model
+# is told via the multi-host section that other hosts may differ.)
+DEFAULT_HOST="${HOSTS[0]}"
+DEFAULT_SHELL=""
+DEFAULT_PS_EXE=""
+# Extract default host's mode/ps from the maps we just built.
+for entry in ${SHELLS_MAP//:/ }; do
+  if [[ "$entry" == "$DEFAULT_HOST="* ]]; then
+    DEFAULT_SHELL="${entry#*=}"
+    break
+  fi
+done
+for entry in ${PS_EXES_MAP//:/ }; do
+  if [[ "$entry" == "$DEFAULT_HOST="* ]]; then
+    DEFAULT_PS_EXE="${entry#*=}"
+    break
+  fi
+done
+
+# Pick the right prompt addendum for the default host's shell.
+if [[ "$DEFAULT_SHELL" == "powershell" ]]; then
   PROMPT_FILE="$PROMPT_FILE_POWERSHELL"
 else
   PROMPT_FILE="$PROMPT_FILE_POSIX"
@@ -180,6 +266,25 @@ APPEND_PROMPT=""
 if [[ "$USE_PROMPT" -eq 1 ]]; then
   APPEND_PROMPT="$(cat "$PROMPT_FILE")"
 fi
+
+# Multi-host addendum: appended whenever there is more than one host. Tells
+# the model the routing syntax and the per-host shell map. Always added on
+# top of the per-shell prompt — both POSIX and PowerShell variants need it.
+if [[ ${#HOSTS[@]} -gt 1 ]]; then
+  ROSTER=""
+  for h in "${HOSTS[@]}"; do
+    hmode=""
+    for entry in ${SHELLS_MAP//:/ }; do
+      if [[ "$entry" == "$h="* ]]; then hmode="${entry#*=}"; break; fi
+    done
+    marker=""
+    [[ "$h" == "$DEFAULT_HOST" ]] && marker=" (default)"
+    ROSTER+="- \`$h\` — ${hmode}${marker}"$'\n'
+  done
+  MULTI_HOST_BLOCK=$'\n\n---\n\n## Multi-host routing (active)\n\nYou have access to MORE THAN ONE remote host in this session. To target a specific host, **prefix the Bash command with `@<host>`** as the very first token, e.g. `@host2 hostname`. Without a prefix, the command goes to the default host (the first in the list).\n\n**Available hosts:**\n\n'"$ROSTER"$'\nRules:\n- Filesystems on these hosts are independent — to move a file from one to another, use `scp` between them (or pull to the Mac and push back).\n- Working directory is tracked **per host**: `cd /tmp` on one host does not affect another.\n- Unknown `@badname` prefix returns an error without running anything.\n- Multi-agent role assignments still apply per-host; treat each host as a separate workspace unless explicitly told they share state.\n'
+  APPEND_PROMPT+="$MULTI_HOST_BLOCK"
+fi
+
 if [[ -n "$TASK_FILE" ]]; then
   [[ -f "$TASK_FILE" ]] || { echo "remote-launcher: task file $TASK_FILE not found" >&2; exit 1; }
   APPEND_PROMPT+=$'\n\n---\n\n## User task\n\n'"$(cat "$TASK_FILE")"
@@ -187,8 +292,13 @@ fi
 
 SESSION_ID="$$-$(date +%s)"
 
-echo "[remote-launcher] launching Claude Code (session $SESSION_ID); bash → $VM_HOST"
-echo "[remote-launcher] tip: another terminal + 'remote-launcher $VM_HOST' = parallel agent"
+if [[ ${#HOSTS[@]} -gt 1 ]]; then
+  echo "[remote-launcher] launching Claude Code (session $SESSION_ID); bash → ${HOSTS[*]} (default: $DEFAULT_HOST)"
+  echo "[remote-launcher] route via @<host> prefix in Bash; unprefixed → $DEFAULT_HOST"
+else
+  echo "[remote-launcher] launching Claude Code (session $SESSION_ID); bash → $DEFAULT_HOST"
+  echo "[remote-launcher] tip: another terminal + 'remote-launcher $DEFAULT_HOST' = parallel agent"
+fi
 
 CLAUDE_ARGS=()
 [[ -n "$APPEND_PROMPT" ]] && CLAUDE_ARGS+=(--append-system-prompt "$APPEND_PROMPT")
@@ -199,7 +309,7 @@ CLAUDE_ARGS=()
 # filesystem. Override with --confirm-bash if you want every Bash call to ask.
 if [[ "$AUTO_BASH" -eq 1 ]]; then
   CLAUDE_ARGS+=(--allowedTools 'Bash(*)')
-  echo "[remote-launcher] Bash auto-approve ON (Bash → $VM_HOST). Read/Edit/Write still prompt."
+  echo "[remote-launcher] Bash auto-approve ON (Bash → ${HOSTS[*]}). Read/Edit/Write still prompt."
 else
   echo "[remote-launcher] Bash auto-approve OFF (--confirm-bash); every Bash call will require approval."
 fi
@@ -207,11 +317,19 @@ fi
 # bash 3.2 (macOS) errors on "${EMPTY[@]}" under set -u — use the +alt form.
 [[ ${#EXTRA_ARGS[@]} -gt 0 ]] && CLAUDE_ARGS+=("${EXTRA_ARGS[@]}")
 
+# VM_REMOTE_HOST / _SHELL / _PS_EXE remain as the DEFAULT host's values for
+# backward compatibility (older ssh-shell behavior + scripts that read them).
+# VM_REMOTE_HOSTS / _SHELLS / _PS_EXES / _DEFAULT_HOST are the new multi-host
+# fields used by ssh-shell to route @host-prefixed commands.
 exec env \
   CLAUDE_CODE_SHELL="$SHELL_WRAPPER" \
   CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 \
-  VM_REMOTE_HOST="$VM_HOST" \
+  VM_REMOTE_HOST="$DEFAULT_HOST" \
+  VM_REMOTE_HOSTS="${HOSTS[*]}" \
+  VM_REMOTE_DEFAULT_HOST="$DEFAULT_HOST" \
   VM_REMOTE_SESSION="$SESSION_ID" \
-  VM_REMOTE_SHELL="$SHELL_MODE" \
-  VM_REMOTE_PS_EXE="$PS_EXE" \
+  VM_REMOTE_SHELL="$DEFAULT_SHELL" \
+  VM_REMOTE_SHELLS="$SHELLS_MAP" \
+  VM_REMOTE_PS_EXE="$DEFAULT_PS_EXE" \
+  VM_REMOTE_PS_EXES="$PS_EXES_MAP" \
   claude "${CLAUDE_ARGS[@]}"
