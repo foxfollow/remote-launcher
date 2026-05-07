@@ -42,7 +42,7 @@ The default Claude Code workflow for "operate on a remote box" is to install Cla
 ## Install
 
 ```bash
-git clone <this-repo> ~/code/remote-launcher
+git clone https://github.com/foxfollow/remote-launcher.git ~/code/remote-launcher
 cd ~/code/remote-launcher
 ./install.sh
 ```
