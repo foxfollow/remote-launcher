@@ -118,7 +118,9 @@ A worked example is in [`examples/multi-host.md`](examples/multi-host.md).
 ## Multi-agent
 
 Multiple Claude sessions, each in its own terminal, all targeting the
-same VM:
+same VM (or the same set of VMs).
+
+### Same VM, several agents
 
 ```bash
 # Terminal 1 — init agent (sequential)
@@ -139,6 +141,74 @@ scp -r myvm:~/multi-demo ~/Downloads/
 
 A complete worked example with a shared MASTER.md is in
 [`examples/multi-agent.md`](examples/multi-agent.md).
+
+### Several agents over several VMs (3+)
+
+Combine multi-host (one agent → many VMs) with multi-agent (many agents →
+shared workspace) for larger coordinated runs. Each terminal opens its own
+Claude session against the same set of hosts; agents share files via
+filesystem on each VM (or via `scp` between VMs).
+
+```bash
+# All terminals see the same 3 VMs; default host is webvm.
+TASK=~/projects/demo/MASTER.md
+
+# Terminal 1 — coordinator (Agent 0)
+remote-launcher webvm --host dbvm --host cachevm --task "$TASK"
+
+# Terminals 2..4 — workers (Agents 1..3), one per VM responsibility
+remote-launcher webvm --host dbvm --host cachevm --task "$TASK"   # Agent 1
+remote-launcher webvm --host dbvm --host cachevm --task "$TASK"   # Agent 2
+remote-launcher webvm --host dbvm --host cachevm --task "$TASK"   # Agent 3
+```
+
+Inside each Claude session, route by `@host` and stay in your assigned
+role+host scope. Example role split in `MASTER.md`:
+
+```
+You are Agent N. Roles:
+  Agent 0 — coordinator. Read /home/testuser/coord/state.json on @webvm; never edit other agents' files.
+  Agent 1 — owns @webvm:/srv/app and nginx.
+  Agent 2 — owns @dbvm:/var/lib/postgresql and migrations.
+  Agent 3 — owns @cachevm:/etc/redis and cache config.
+Write progress to /home/testuser/coord/agent-N.log on YOUR primary host.
+```
+
+Practical tips:
+
+- Each terminal opens its own ControlMaster sockets (one per VM, per
+  session) — at 4 agents × 3 VMs that's 12 sockets. SSH copes; just be
+  aware if you cap MaxSessions/MaxStartups on the VM's sshd.
+- Bash auto-approve is on by default per session — for cross-host
+  destructive operations, consider `--confirm-bash` on the coordinator
+  terminal only.
+- Agents do NOT see each other's working directory. `cd` is per
+  session × per host. Use absolute paths in shared coordination files.
+- For 5+ agents, prefer scripting the launches in a tmux/wezterm layout
+  rather than opening terminals by hand.
+
+## Manual exploration with throwaway VMs
+
+`tests/manual-multi-vm.sh` boots N (1–9) Ubuntu containers as distinct SSH
+hosts and prints the exact `remote-launcher` command to run. Useful when
+you want to play with multi-host without standing up real VMs.
+
+```bash
+tests/manual-multi-vm.sh        # 2 containers (mh-vm-1, mh-vm-2)
+tests/manual-multi-vm.sh 3      # 3 containers
+tests/manual-multi-vm.sh 5      # 5 containers
+tests/manual-multi-vm.sh --down # tear down everything the script created
+```
+
+The script generates an SSH config under `tests/.manual-ssh-config`. To
+have `remote-launcher` pick it up without modifying `~/.ssh/config`:
+
+```bash
+VM_SSH_OPTS="-F $(pwd)/tests/.manual-ssh-config" \
+  remote-launcher mh-vm-1 --host mh-vm-2 --host mh-vm-3
+```
+
+(`VM_SSH_OPTS` flows through `ssh-shell` to every per-host SSH call.)
 
 ## Security model
 

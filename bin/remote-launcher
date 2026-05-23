@@ -118,6 +118,14 @@ command -v claude >/dev/null || { echo "remote-launcher: 'claude' not found in P
 
 SSH_DETECT_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 
+# VM_SSH_OPTS flows through to every ssh invocation (preflight, probes, AND
+# the wrapper's runtime calls). Lets manual-multi-vm.sh and the test harness
+# use a custom -F config without touching ~/.ssh/config.
+if [[ -n "${VM_SSH_OPTS:-}" ]]; then
+  read -ra _VM_SSH_OPTS_ARR <<< "$VM_SSH_OPTS"
+  SSH_DETECT_OPTS+=("${_VM_SSH_OPTS_ARR[@]}")
+fi
+
 probe_posix() {
   # $1 = host
   ssh "${SSH_DETECT_OPTS[@]}" "$1" "/bin/sh -c 'echo __posix_ok__'" 2>/dev/null
@@ -135,7 +143,7 @@ ssh_preflight() {
   local host="$1"
   local ssh_err ssh_rc resolved ans
   echo "[remote-launcher] testing SSH to $host..."
-  ssh_err=$(ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$host" 'echo ok' 2>&1 >/dev/null) && ssh_rc=0 || ssh_rc=$?
+  ssh_err=$(ssh "${SSH_DETECT_OPTS[@]}" "$host" 'echo ok' 2>&1 >/dev/null) && ssh_rc=0 || ssh_rc=$?
 
   if [[ $ssh_rc -eq 0 ]]; then
     return 0
@@ -157,7 +165,7 @@ ssh_preflight() {
     fi
     ssh-keygen -R "$resolved" >/dev/null 2>&1 || true
     [[ "$resolved" != "$host" ]] && ssh-keygen -R "$host" >/dev/null 2>&1 || true
-    if ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$host" 'echo ok' >/dev/null 2>&1; then
+    if ssh "${SSH_DETECT_OPTS[@]}" "$host" 'echo ok' >/dev/null 2>&1; then
       echo "[remote-launcher] new host key accepted for $host."
     else
       echo "[remote-launcher] ERROR: cannot SSH to $host even after replacing host key" >&2
