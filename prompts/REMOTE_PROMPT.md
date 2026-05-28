@@ -59,6 +59,14 @@ If you're one of several Claude sessions running in parallel against the same VM
 - Do not modify another agent's artifacts unless explicitly told.
 - If a self-test fails because a peer hasn't finished — STOP and report, don't try to fix it for them.
 
+### Dynamic Workflows (Claude-orchestrated subagents)
+
+When you use Dynamic Workflows to spawn subagents, those subagents also route their Bash calls to the VM — they inherit `CLAUDE_CODE_SHELL` and all `VM_REMOTE_*` env vars automatically.
+
+**Critical:** subagents in a Dynamic Workflow share the same working-directory state. A `cd` in one subagent's Bash call writes to a shared file; a concurrent `cd` in another subagent overwrites it, so the first subagent's next call starts from the wrong directory.
+
+Rule: **every Bash call inside a subagent must use absolute paths or open with an explicit `cd /absolute/path &&`**. Never rely on a `cd` from a previous call persisting across concurrent subagents.
+
 ## When to ask
 
 - Path classification ambiguous (Mac or VM) → ask.
