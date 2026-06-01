@@ -87,9 +87,13 @@ Give a single Claude session access to two or three VMs at once and let it
 coordinate between them. Useful when you have, say, a web VM and a DB VM and
 want one agent to set up the app on one and the schema on the other.
 
+The first host is the default (unprefixed Bash calls go there). Add more hosts
+as bare positionals or with repeated `--host` flags — they're equivalent:
+
 ```bash
-remote-launcher webvm --host dbvm                     # default=webvm, also dbvm
-remote-launcher webvm --host dbvm --host cachevm      # three hosts
+remote-launcher webvm dbvm                            # default=webvm, also dbvm
+remote-launcher webvm --host dbvm                     # same thing
+remote-launcher webvm dbvm cachevm                    # three hosts
 ```
 
 Inside Claude, route a Bash call by prefixing it with `@<host>`:
@@ -107,6 +111,32 @@ Filesystems are independent: to move a file between hosts, the agent uses
 `scp` (host-to-host) or pulls to the Mac and pushes back.
 
 A worked example is in [`examples/multi-host.md`](examples/multi-host.md).
+
+### Including the Mac itself (`localhost`)
+
+Use the special host name `localhost` to add **this Mac** to the session. Its
+Bash commands run locally (no SSH), so the agent can drive remote VMs *and*
+your Mac from one session — no more quitting Claude to run something locally.
+
+```bash
+remote-launcher vm1 localhost                 # default=vm1, plus the Mac
+remote-launcher vm1 localhost vm2             # remote vm1 (default) + Mac + remote vm2
+remote-launcher localhost vm1                 # Mac is the default host
+```
+
+```
+@localhost git -C ~/NotSync/myrepo status     # local git on the Mac
+@vm1 cat /etc/os-release                       # remote VM
+scp vm1:~/build.tar ~/Downloads/              # (runs wherever it's prefixed)
+```
+
+Unlike remote hosts, `@localhost` shares the **same filesystem** as your
+Read/Edit/Write tools — a file you Edit on the Mac is immediately visible to
+`@localhost cat`, and vice versa. Working directory is still tracked
+per-host, so `@localhost cd ~/repo` persists across calls independently of
+the VMs. Note that Bash auto-approve is on by default, which means
+`@localhost` commands run on your Mac without a prompt — use `--confirm-bash`
+if you want every call (local or remote) to ask first.
 
 ### Roadmap
 
@@ -223,6 +253,12 @@ See [`docs/security-model.md`](docs/security-model.md). Short version:
 | Connection theft after disconnect | `ControlPersist=15m`; the socket is in `$TMPDIR` of your Mac user only |
 
 The full security model is verified by the test suite — see [`tests/`](tests/).
+
+> **Note on `localhost`:** the isolation above assumes Bash runs on a remote VM.
+> When you add `localhost` to a session, `@localhost` Bash commands execute on
+> your Mac directly — and with the default Bash auto-approve they run without a
+> prompt. Only add `localhost` when you're comfortable letting the agent run
+> local commands unattended, or pair it with `--confirm-bash`.
 
 ## Diagnostics
 
