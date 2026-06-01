@@ -4,6 +4,16 @@ All notable changes to remote-launcher will be documented here.
 
 ## [Unreleased]
 
+## [0.2.1]
+
+### Added
+- `localhost` as a special host that runs Bash on the Mac directly (no SSH, no ControlMaster). Mix it into a multi-host session: `remote-launcher remote-vm1 localhost remote-vm2`. `@localhost` commands execute via local `/bin/sh` with per-host cwd persistence, exit-code passthrough, and the same routing/state-file infrastructure as remote hosts. Useful for letting the agent run local Mac commands (git, file moves) without restarting Claude outside the launcher.
+- Bare positional hosts on the command line: `remote-launcher vm1 vm2 vm3` is now equivalent to `remote-launcher vm1 --host vm2 --host vm3`. Unknown `-*` flags still forward to Claude.
+- README section "Including the Mac itself (`localhost`)" plus a security note: under default Bash auto-approve, `@localhost` commands run unattended — pair with `--confirm-bash` if that's a concern.
+
+### Tracking
+- Bumped Claude Code tracked version to 2.1.159.
+
 ## [0.2.0]
 
 ### Added
