@@ -26,6 +26,11 @@
 # in single-host mode). Per-host ControlMaster sockets and per-host CWD files
 # keep the sessions isolated.
 #
+# Special host `localhost`: runs the command on THIS machine via a local
+# /bin/sh instead of SSH (no ControlMaster, no remote bootstrap). cwd is still
+# tracked per-host so `cd` persists between calls. Useful for mixing the Mac
+# into a multi-host session alongside real SSH targets.
+#
 # Notes:
 # - Uses SSH ControlMaster for connection reuse.
 # - Tracks remote cwd via a tmpfile on the VM; cats it after every command.
@@ -209,6 +214,33 @@ PS_EXE_FILE="$STATE_DIR/ps-exe-$TARGET_SLUG"
 SSH_CTL="$SOCK_DIR/rl-${SESSION_ID}-${TARGET_SLUG}.s"
 REMOTE_PWD_BASENAME=".remote-launcher-cwd-${SESSION_ID}-${TARGET_SLUG}"
 REMOTE_PWD_FILE_POSIX="/tmp/${REMOTE_PWD_BASENAME}"
+
+# ---------- localhost: run on the Mac directly, no SSH ----------
+# When the target host is "localhost" we skip SSH entirely and run the command
+# in a local /bin/sh, mirroring the POSIX remote path (cd into the tracked cwd,
+# run $CMD — which is Claude's bash-wrapped command — then capture the new cwd).
+# Because this is the same machine Claude runs on, $HOME and the filesystem here
+# are the ones Read/Edit/Write touch.
+if [[ "$TARGET_HOST" == "localhost" ]]; then
+  if [[ ! -s "$CWD_FILE" ]]; then
+    printf '%s\n' "$HOME" > "$CWD_FILE"
+    printf '%s\n' "posix" > "$SHELL_MODE_FILE"
+  fi
+  CWD=$(<"$CWD_FILE")
+  [[ -z "$CWD" ]] && CWD="$HOME"
+
+  LOCAL_PWD_FILE="$STATE_DIR/local-pwd-$TARGET_SLUG"
+  /bin/sh -c "cd '$CWD' 2>/dev/null || cd \"\$HOME\"
+$CMD
+__EC=\$?
+pwd > '$LOCAL_PWD_FILE' 2>/dev/null
+exit \$__EC"
+  EC=$?
+
+  NEW_CWD=$(cat "$LOCAL_PWD_FILE" 2>/dev/null || true)
+  [[ -n "$NEW_CWD" ]] && printf '%s\n' "$NEW_CWD" > "$CWD_FILE"
+  exit $EC
+fi
 
 SSH_OPTS=(
   -o "ControlMaster=auto"

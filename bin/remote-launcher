@@ -2,18 +2,24 @@
 # remote-launcher — launch Claude Code with Bash redirected to a remote host via SSH.
 #
 # Usage:
-#   remote-launcher <ssh-host>                        # bare interactive (single host)
-#   remote-launcher <ssh-host> --host <ssh-host2>     # multi-host; repeatable
-#   remote-launcher <ssh-host> --task FILE            # pre-load task into system prompt
-#   remote-launcher <ssh-host> --no-prompt            # skip REMOTE_PROMPT.md append
-#   remote-launcher <ssh-host> --confirm-bash         # require approval for every Bash call (default: auto-approve)
-#   remote-launcher <ssh-host> -pfp                   # auto-accept changed host fingerprints (alias: --proceedfingerprint)
-#   remote-launcher <ssh-host> --shell <mode>         # auto | posix | powershell (default: auto)
-#   remote-launcher <ssh-host> -- <claude-args...>    # forward args to claude
+#   remote-launcher <host>                            # bare interactive (single host)
+#   remote-launcher <host> <host2> <host3>            # multi-host (bare positionals)
+#   remote-launcher <host> --host <host2>             # multi-host; repeatable (equivalent)
+#   remote-launcher <host> --task FILE                # pre-load task into system prompt
+#   remote-launcher <host> --no-prompt                # skip REMOTE_PROMPT.md append
+#   remote-launcher <host> --confirm-bash             # require approval for every Bash call (default: auto-approve)
+#   remote-launcher <host> -pfp                       # auto-accept changed host fingerprints (alias: --proceedfingerprint)
+#   remote-launcher <host> --shell <mode>             # auto | posix | powershell (default: auto)
+#   remote-launcher <host> -- <claude-args...>        # forward args to claude
 #
 # Multi-host: the first positional is the DEFAULT host (Bash calls without a
-# prefix go there). Additional hosts are added via repeated --host flags. Inside
-# Claude, route a Bash call by prefixing it with `@<host> ` (e.g. `@host2 ls`).
+# prefix go there). Additional hosts come from extra bare positionals or
+# repeated --host flags. Inside Claude, route a Bash call by prefixing it with
+# `@<host> ` (e.g. `@host2 ls`).
+#
+# Special host `localhost`: runs Bash on THIS Mac directly (no SSH). Mix it with
+# remote hosts so one Claude session can drive remote VMs and the Mac at once —
+# `@localhost` Bash calls share the same filesystem as Read/Edit/Write.
 #
 # TODO: --shared-workdir <path> — auto-sync a Mac directory to all hosts so
 # Read/Edit/Write on the Mac propagates to every VM. See README "Roadmap".
@@ -22,6 +28,7 @@
 #   remote-launcher myvm
 #   remote-launcher user@10.0.0.5 --task ~/projects/demo/TASK.md
 #   remote-launcher webvm --host dbvm                 # default=webvm, also dbvm
+#   remote-launcher vm1 localhost vm2                 # remote vm1 (default) + Mac + remote vm2
 #   remote-launcher myvm -- --model claude-opus-4-7
 
 set -euo pipefail
@@ -41,7 +48,7 @@ PROMPT_FILE_POSIX="$PROJECT_DIR/prompts/REMOTE_PROMPT.md"
 PROMPT_FILE_POWERSHELL="$PROJECT_DIR/prompts/REMOTE_PROMPT_POWERSHELL.md"
 
 usage() {
-  sed -n '3,26p' "$SELF"
+  sed -n '4,32p' "$SELF"
   exit "${1:-0}"
 }
 
@@ -77,8 +84,12 @@ while [[ $# -gt 0 ]]; do
       SHELL_MODE="$2"; shift 2 ;;
     --)
       shift; EXTRA_ARGS=("$@"); break ;;
-    *)
+    -*)
       EXTRA_ARGS+=("$1"); shift ;;
+    *)
+      # Bare positional → additional host. Lets you write
+      # `remote-launcher vm1 localhost vm2` instead of repeating --host.
+      EXTRA_HOSTS+=("$1"); shift ;;
   esac
 done
 
@@ -233,6 +244,13 @@ detect_shell_for_host() {
 SHELLS_MAP=""
 PS_EXES_MAP=""
 for h in "${HOSTS[@]}"; do
+  # localhost is the Mac itself — no SSH preflight, no shell probe. The wrapper
+  # runs these commands locally via /bin/sh, which is always POSIX here.
+  if [[ "$h" == "localhost" ]]; then
+    echo "[remote-launcher] $h shell: posix (local Mac — no SSH)"
+    SHELLS_MAP+="${SHELLS_MAP:+:}$h=posix"
+    continue
+  fi
   ssh_preflight "$h"
   detect_shell_for_host "$h"
   echo "[remote-launcher] $h shell: ${DETECTED_SHELL}${DETECTED_PS_EXE:+ ($DETECTED_PS_EXE)}"
@@ -287,9 +305,10 @@ if [[ ${#HOSTS[@]} -gt 1 ]]; then
     done
     marker=""
     [[ "$h" == "$DEFAULT_HOST" ]] && marker=" (default)"
+    [[ "$h" == "localhost" ]] && marker+=" — runs on THIS Mac directly (no SSH); shares the Mac filesystem with Read/Edit/Write"
     ROSTER+="- \`$h\` — ${hmode}${marker}"$'\n'
   done
-  MULTI_HOST_BLOCK=$'\n\n---\n\n## Multi-host routing (active)\n\nYou have access to MORE THAN ONE remote host in this session. To target a specific host, **prefix the Bash command with `@<host>`** as the very first token, e.g. `@host2 hostname`. Without a prefix, the command goes to the default host (the first in the list).\n\n**Available hosts:**\n\n'"$ROSTER"$'\nRules:\n- Filesystems on these hosts are independent — to move a file from one to another, use `scp` between them (or pull to the Mac and push back).\n- Working directory is tracked **per host**: `cd /tmp` on one host does not affect another.\n- Unknown `@badname` prefix returns an error without running anything.\n- Multi-agent role assignments still apply per-host; treat each host as a separate workspace unless explicitly told they share state.\n'
+  MULTI_HOST_BLOCK=$'\n\n---\n\n## Multi-host routing (active)\n\nYou have access to MORE THAN ONE host in this session. To target a specific host, **prefix the Bash command with `@<host>`** as the very first token, e.g. `@host2 hostname`. Without a prefix, the command goes to the default host (the first in the list).\n\n**Available hosts:**\n\n'"$ROSTER"$'\nRules:\n- Filesystems on these hosts are independent — to move a file from one to another, use `scp` between them (or pull to the Mac and push back).\n- A host named `localhost` runs on THIS Mac directly (no SSH). `@localhost` Bash commands see the SAME filesystem as your Read/Edit/Write tools — so you can `@localhost cat ~/file` a path you just edited, or `scp myvm:~/x /tmp/x` then `@localhost ...` it. Use `@localhost` for local git, file moves between the Mac and VMs, and anything that must touch the Mac.\n- Working directory is tracked **per host**: `cd /tmp` on one host does not affect another.\n- Unknown `@badname` prefix returns an error without running anything.\n- Multi-agent role assignments still apply per-host; treat each host as a separate workspace unless explicitly told they share state.\n'
   APPEND_PROMPT+="$MULTI_HOST_BLOCK"
 fi
 
