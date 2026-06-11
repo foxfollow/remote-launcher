@@ -148,16 +148,25 @@ if [[ -z "$CMD" ]]; then
 fi
 
 # ---------- @host prefix routing ----------
-# Claude Code 2.1.x wraps the model's command in:
-#   shopt -u extglob 2>/dev/null || true && eval '<inner>' < /dev/null && pwd -P >| /tmp/claude-<hash>-cwd
-# We need to peek at <inner> for the @host prefix BEFORE deciding which host
-# to dispatch to (the prefix is part of what the model wrote, not the wrapper).
+# Claude Code wraps the model's command in an eval marker:
+#   …eval '<inner>' < /dev/null && pwd -P >| /tmp/claude-<hash>-cwd
+# In older versions CMD started right at `shopt -u extglob … && eval '`. Since
+# 2.1.173 the Bash tool prepends a prelude that sources a shell snapshot and
+# exports CLAUDE_CODE_VERSION before that marker, e.g.:
+#   source …/snapshot-bash-….sh 2>/dev/null || true && export CLAUDE_CODE_VERSION="…"
+#   : && shopt -u extglob 2>/dev/null || true && eval '<inner>' < /dev/null && pwd …
+# So we locate the marker ANYWHERE in CMD (everything before it is prelude we
+# preserve) rather than anchoring at the start. We need <inner> to peek at the
+# @host prefix BEFORE deciding which host to dispatch to.
+EVAL_MARKER="shopt -u extglob 2>/dev/null || true && eval '"
 PREFIX_INNER=""
 PREFIX_WRAPPER=""    # "" if CMD wasn't wrapped; otherwise the bash prelude part to keep
 PREFIX_TAIL=""       # "" if CMD wasn't wrapped; otherwise the trailing "' < /dev/null …" part
-if [[ "$CMD" == "shopt -u extglob 2>/dev/null || true && eval '"* ]]; then
-  PREFIX_WRAPPER="shopt -u extglob 2>/dev/null || true && eval '"
-  inner_tmp="${CMD#shopt -u extglob 2>/dev/null || true && eval \'}"
+if [[ "$CMD" == *"$EVAL_MARKER"* ]]; then
+  # Everything up to and including the first marker (prelude + marker) is kept
+  # verbatim so snapshot sourcing / version export still happen on dispatch.
+  PREFIX_WRAPPER="${CMD%%"$EVAL_MARKER"*}$EVAL_MARKER"
+  inner_tmp="${CMD#*"$EVAL_MARKER"}"
   # Trailing portion: from the last "' < /dev/null" onward.
   PREFIX_TAIL="${inner_tmp##*\' < /dev/null}"
   PREFIX_TAIL="' < /dev/null${PREFIX_TAIL}"
@@ -362,9 +371,11 @@ if [[ "$SHELL_MODE" == "powershell" ]]; then
   # bash's '\''-style single-quote escapes, and run that as PowerShell. We
   # ignore the embedded `pwd -P > /tmp/claude-…-cwd` cwd-capture because we
   # have our own cwd round-trip below.
-  if [[ "$CMD" == "shopt -u extglob 2>/dev/null || true && eval '"* ]]; then
-    inner="${CMD#shopt -u extglob 2>/dev/null || true && eval \'}"
-    inner="${inner%\' < /dev/null && pwd -P >| /tmp/claude-*-cwd}"
+  if [[ "$CMD" == *"$EVAL_MARKER"* ]]; then
+    inner="${CMD#*"$EVAL_MARKER"}"
+    # Strip the trailing "' < /dev/null …" portion (from the last occurrence).
+    ps_tail="${inner##*\' < /dev/null}"
+    inner="${inner%\' < /dev/null"$ps_tail"}"
     # Un-escape bash's '\''-style single-quote escapes back to '
     inner="${inner//\'\\\'\'/\'}"
     CMD="$inner"
