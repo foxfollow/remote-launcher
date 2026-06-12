@@ -11,6 +11,12 @@
 #   remote-launcher <host> -pfp                       # auto-accept changed host fingerprints (alias: --proceedfingerprint)
 #   remote-launcher <host> --shell <mode>             # auto | posix | powershell (default: auto)
 #   remote-launcher <host> -- <claude-args...>        # forward args to claude
+#   remote-launcher <host> --resume <id> --chrome     # unknown flags auto-forward to claude
+#
+# Argument order: remote-launcher flags and host names come FIRST; any unknown
+# flag (e.g. --resume, --model, --chrome) is treated as a claude flag and it
+# plus everything after it is forwarded to claude. So put hosts before claude
+# flags. The explicit `--` separator still works and forces forwarding.
 #
 # Multi-host: the first positional is the DEFAULT host (Bash calls without a
 # prefix go there). Additional hosts come from extra bare positionals or
@@ -48,7 +54,7 @@ PROMPT_FILE_POSIX="$PROJECT_DIR/prompts/REMOTE_PROMPT.md"
 PROMPT_FILE_POWERSHELL="$PROJECT_DIR/prompts/REMOTE_PROMPT_POWERSHELL.md"
 
 usage() {
-  sed -n '4,32p' "$SELF"
+  sed -n '4,38p' "$SELF"
   exit "${1:-0}"
 }
 
@@ -83,12 +89,18 @@ while [[ $# -gt 0 ]]; do
     --shell)
       SHELL_MODE="$2"; shift 2 ;;
     --)
-      shift; EXTRA_ARGS=("$@"); break ;;
+      shift; EXTRA_ARGS+=("$@"); break ;;
     -*)
-      EXTRA_ARGS+=("$1"); shift ;;
+      # Unknown flag → it's meant for claude. Forward it AND everything after
+      # it (implicit `--`). We can't know whether a claude flag takes a value,
+      # and that value is often a bare word (e.g. `--resume <session-id>`,
+      # `--model <name>`) which would otherwise be misread as a host. So once
+      # claude flags begin, stop interpreting bare words as hosts.
+      EXTRA_ARGS+=("$@"); break ;;
     *)
       # Bare positional → additional host. Lets you write
       # `remote-launcher vm1 localhost vm2` instead of repeating --host.
+      # Must come before any claude flags (see the -* case above).
       EXTRA_HOSTS+=("$1"); shift ;;
   esac
 done
