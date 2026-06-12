@@ -41,15 +41,47 @@ The default Claude Code workflow for "operate on a remote box" is to install Cla
 
 ## Install
 
+### Homebrew (recommended)
+
+```bash
+brew install foxfollow/stone/remote-launcher
+```
+
+This puts `remote-launcher` and `remote-launcher-doctor` on your `PATH`. Updates
+ship through the tap — `brew upgrade remote-launcher`.
+
+Homebrew does **not** touch `~/.claude/`, so to make Claude Code aware of the
+bundled [skill](skill/SKILL.md) (recommended — it teaches the agent when and how
+to use `remote-launcher`), link it once:
+
+```bash
+mkdir -p "$HOME/.claude/skills/remote-launcher"
+ln -sf "$(brew --prefix remote-launcher)/libexec/skill/SKILL.md" \
+       "$HOME/.claude/skills/remote-launcher/SKILL.md"
+```
+
+### From source
+
 ```bash
 git clone https://github.com/foxfollow/remote-launcher.git ~/code/remote-launcher
 cd ~/code/remote-launcher
 ./install.sh
 ```
 
-`install.sh` is non-destructive: it creates symlinks in `~/.local/bin/` and registers the skill in `~/.claude/skills/remote-launcher/`.
+`install.sh` is non-destructive: it symlinks the executables into `~/.local/bin/`
+**and** registers the skill in `~/.claude/skills/remote-launcher/` for you. Make
+sure `~/.local/bin` is in your `PATH`.
 
-Make sure `~/.local/bin` is in your `PATH`.
+### Verify
+
+```bash
+remote-launcher --version          # version + update check
+remote-launcher-doctor             # file / PATH / skill checks
+remote-launcher-doctor <ssh-host>  # also a live SSH round-trip
+```
+
+> **Note:** `remote-launcher` drives the Claude Code CLI (`claude`), which is not
+> available via Homebrew — install it separately. See [Requirements](#requirements).
 
 ## Use
 
