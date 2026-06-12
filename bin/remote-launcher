@@ -53,14 +53,53 @@ SHELL_WRAPPER="$PROJECT_DIR/bin/ssh-shell-bash"
 PROMPT_FILE_POSIX="$PROJECT_DIR/prompts/REMOTE_PROMPT.md"
 PROMPT_FILE_POWERSHELL="$PROJECT_DIR/prompts/REMOTE_PROMPT_POWERSHELL.md"
 
+# Single source of truth for the project version: the VERSION file at the repo
+# root (shipped alongside the scripts by both install.sh and the Homebrew
+# formula). Read it once; fall back to "unknown" if it's somehow missing.
+RL_VERSION="$(tr -d '[:space:]' < "$PROJECT_DIR/VERSION" 2>/dev/null || true)"
+RL_VERSION="${RL_VERSION:-unknown}"
+RL_REPO="foxfollow/remote-launcher"
+
 usage() {
   sed -n '4,38p' "$SELF"
   exit "${1:-0}"
 }
 
+# Print version and, best-effort, whether a newer release exists on GitHub.
+# Network failures are silent — `-v` must never hang or error.
+print_version() {
+  echo "remote-launcher $RL_VERSION"
+
+  command -v curl >/dev/null 2>&1 || { exit 0; }
+  local latest
+  latest=$(curl -fsSL --max-time 3 \
+    "https://api.github.com/repos/$RL_REPO/releases/latest" 2>/dev/null \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' | head -n1)
+
+  if [[ -z "$latest" || "$RL_VERSION" == "unknown" ]]; then
+    exit 0
+  fi
+  if [[ "$latest" == "$RL_VERSION" ]]; then
+    echo "  up to date (latest release: $latest)"
+    exit 0
+  fi
+  # Numeric X.Y.Z compare: if the latest release sorts highest, it's newer.
+  local newest
+  newest=$(printf '%s\n%s\n' "$RL_VERSION" "$latest" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1)
+  if [[ "$newest" == "$latest" ]]; then
+    echo "  update available: $latest (you have $RL_VERSION)"
+    echo "  upgrade: brew upgrade remote-launcher"
+    echo "       or: git -C \"$PROJECT_DIR\" pull"
+  else
+    echo "  ahead of latest release ($latest) — running a dev build"
+  fi
+  exit 0
+}
+
 [[ $# -lt 1 ]] && usage 1
 case "$1" in
   -h|--help) usage 0 ;;
+  -v|--version) print_version ;;
 esac
 
 VM_HOST="$1"; shift
