@@ -11,6 +11,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   echo "Usage: remote-launcher-doctor [<ssh-host>]"
   echo "  No args  — file/setup checks only"
   echo "  <host>   — also runs live SSH + ssh-shell round-trip against that host"
+  echo "  -v|--version — print version"
   exit 0
 fi
 
@@ -18,6 +19,16 @@ SELF="${BASH_SOURCE[0]}"
 while [[ -L "$SELF" ]]; do SELF=$(readlink "$SELF"); done
 SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+
+RL_VERSION="$(tr -d '[:space:]' < "$PROJECT_DIR/VERSION" 2>/dev/null || true)"
+RL_VERSION="${RL_VERSION:-unknown}"
+
+if [[ "${1:-}" == "-v" || "${1:-}" == "--version" ]]; then
+  echo "remote-launcher-doctor $RL_VERSION"
+  exit 0
+fi
+
+echo "remote-launcher-doctor (v$RL_VERSION)"
 
 PASS=0; FAIL=0
 ok()   { echo "  ✅ $1"; PASS=$((PASS+1)); }
@@ -33,15 +44,15 @@ echo "== file/setup checks =="
 [[ -f "$PROJECT_DIR/prompts/REMOTE_PROMPT.md" ]] && ok "REMOTE_PROMPT.md present" || fail "REMOTE_PROMPT.md missing"
 [[ -f "$PROJECT_DIR/skill/SKILL.md" ]]     && ok "SKILL.md present"        || fail "SKILL.md missing"
 
-if [[ -L "$HOME/.local/bin/remote-launcher" || -x "$HOME/.local/bin/remote-launcher" ]]; then
-  ok "~/.local/bin/remote-launcher in place"
+# remote-launcher just needs to be reachable on PATH — either via install.sh
+# (~/.local/bin symlink) or Homebrew (/opt/homebrew/bin). Accept any of them.
+if RL_ON_PATH=$(command -v remote-launcher 2>/dev/null); then
+  ok "remote-launcher on PATH ($RL_ON_PATH)"
+elif [[ -L "$HOME/.local/bin/remote-launcher" || -x "$HOME/.local/bin/remote-launcher" ]]; then
+  ok "~/.local/bin/remote-launcher in place (not on PATH yet)"
 else
-  fail "~/.local/bin/remote-launcher NOT in place — run install.sh"
+  fail "remote-launcher NOT on PATH — run install.sh or 'brew install foxfollow/stone/remote-launcher'"
 fi
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) ok "~/.local/bin in PATH" ;;
-  *) fail "~/.local/bin NOT in PATH — add to ~/.zshrc: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
-esac
 command -v claude >/dev/null && ok "claude in PATH" || fail "claude not in PATH"
 command -v ssh    >/dev/null && ok "ssh in PATH"    || fail "ssh not in PATH"
 

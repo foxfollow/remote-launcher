@@ -1,0 +1,136 @@
+name: Release
+
+# On a version tag push (v*), create a GitHub Release and update the Homebrew
+# formula in foxfollow/homebrew-stone (bump url tag + sha256). No build step —
+# remote-launcher is plain shell scripts, so Homebrew installs the source
+# tarball directly.
+#
+# Requirements:
+#   - Secret HOMEBREW_TAP_TOKEN: a PAT (classic: `repo`, or fine-grained with
+#     Contents: read/write on foxfollow/homebrew-stone). Without it, the tap
+#     update is skipped (the GitHub Release is still created).
+#   - The committed VERSION file must match the tag (CI fails otherwise).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)release, e.g. v0.2.3"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag / version
+        id: ver
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          [[ "$TAG" == v* ]] || { echo "::error::tag '$TAG' must start with 'v'"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout (at the tag)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ver.outputs.tag }}
+
+      - name: Verify VERSION file matches tag
+        run: |
+          FILE_VER="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$FILE_VER" != "${{ steps.ver.outputs.version }}" ]]; then
+            echo "::error::VERSION file ($FILE_VER) != tag ${{ steps.ver.outputs.version }}. Bump VERSION before tagging."
+            exit 1
+          fi
+          echo "VERSION ok: $FILE_VER"
+
+      - name: Compute source tarball SHA256
+        id: sha
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+          # GitHub generates the archive on demand; retry until it's ready.
+          for i in $(seq 1 12); do
+            if curl -fsSL "$URL" -o src.tar.gz; then break; fi
+            echo "archive not ready yet (attempt $i), waiting..."; sleep 5
+          done
+          SHA=$(sha256sum src.tar.gz | awk '{print $1}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "  URL:    $URL"
+          echo "  SHA256: $SHA"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          NEW_SHA256: ${{ steps.sha.outputs.sha256 }}
+        run: |
+          if [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not set — skipping tap update. Add the secret to enable auto-bump."
+            exit 0
+          fi
+          echo "🍺 Updating Homebrew formula to ${TAG} (sha256 ${NEW_SHA256})"
+
+          TAP_REPO="foxfollow/homebrew-stone"
+          FORMULA_PATH="Formula/remote-launcher.rb"
+          API_URL="https://api.github.com/repos/${TAP_REPO}/contents/${FORMULA_PATH}"
+
+          RESPONSE=$(curl -s -H "Authorization: token ${HOMEBREW_TAP_TOKEN}" \
+            -H "Accept: application/vnd.github+json" "$API_URL")
+
+          FILE_SHA=$(echo "$RESPONSE" | python3 -c "import sys,json;print(json.load(sys.stdin)['sha'])" 2>/dev/null || true)
+          if [[ -z "$FILE_SHA" ]]; then
+            echo "::error::could not fetch $FORMULA_PATH from $TAP_REPO"
+            echo "  response: $RESPONSE"
+            exit 1
+          fi
+
+          CURRENT=$(echo "$RESPONSE" | python3 -c "import sys,json,base64;print(base64.b64decode(json.load(sys.stdin)['content']).decode())")
+
+          # Bump the tag in the url and the sha256. The formula keeps a literal
+          # url (…/archive/refs/tags/vX.Y.Z.tar.gz), so we rewrite the tag token.
+          NEW=$(printf '%s' "$CURRENT" \
+            | sed -E "s#/archive/refs/tags/v[0-9][^\"]*\.tar\.gz#/archive/refs/tags/${TAG}.tar.gz#" \
+            | sed -E "s/sha256 \"[0-9a-f]*\"/sha256 \"${NEW_SHA256}\"/")
+
+          if [[ "$NEW" == "$CURRENT" ]]; then
+            echo "Formula already up to date; nothing to commit."
+            exit 0
+          fi
+
+          ENCODED=$(printf '%s' "$NEW" | base64 -w0)
+          PAYLOAD=$(ENCODED="$ENCODED" FILE_SHA="$FILE_SHA" python3 -c "import json,os;print(json.dumps({'message':'ciflow: bump remote-launcher to '+os.environ['TAG'],'content':os.environ['ENCODED'],'sha':os.environ['FILE_SHA']}))")
+
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X PUT \
+            -H "Authorization: token ${HOMEBREW_TAP_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "$API_URL" -d "$PAYLOAD")
+
+          if [[ "$HTTP" == "200" ]]; then
+            echo "✅ Homebrew formula bumped to ${TAG}"
+          else
+            echo "::error::tap update failed (HTTP $HTTP)"
+            exit 1
+          fi

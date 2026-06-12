@@ -4,6 +4,17 @@ All notable changes to remote-launcher will be documented here.
 
 ## [Unreleased]
 
+## [0.2.3]
+
+### Added
+- `remote-launcher -v` / `--version` (and `remote-launcher-doctor -v`) print the version and, best-effort, whether a newer GitHub release exists. Previously `-v` was treated as a host name (`testing SSH to -v`). Version is read from a new top-level `VERSION` file — a single source of truth shared by both scripts (the Homebrew formula writes it from the formula version).
+- Homebrew distribution: `brew install foxfollow/stone/remote-launcher`. Tagged releases auto-bump the formula via `.github/workflows/release.yml` (creates a GitHub Release and updates `foxfollow/homebrew-stone`).
+
+### Changed
+- `remote-launcher-doctor` now passes its install check when `remote-launcher` is reachable on `PATH` via Homebrew (`/opt/homebrew/bin`), not only via `~/.local/bin`. It also prints the version in its header.
+
+## [0.2.2]
+
 ### Fixed
 - `@host` prefix routing was silently ignored under Claude Code 2.1.173+. The Bash tool now prepends a prelude (shell-snapshot `source` + `CLAUDE_CODE_VERSION` export) before the `eval '<inner>'` marker, so `ssh-shell`'s parser — which anchored on the command *starting* with `shopt … && eval '` — skipped @host detection entirely and passed `@localhost`/`@vm` to the shell verbatim (`@localhost: not found`). The parser now locates the `eval` marker anywhere in the command, preserving the prelude. Both the POSIX and PowerShell wrapper-stripping paths are fixed.
 - `remote-launcher`: unknown flags meant for `claude` now forward correctly even when they take a bare-word value. Previously `remote-launcher vm localhost --resume <id>` mis-parsed `<id>` as a host and tried to SSH into it. An unknown flag now forwards itself and everything after it to `claude` (implicit `--`); put host names before any `claude` flags.
