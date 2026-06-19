@@ -54,6 +54,26 @@ If you see "Control socket connect: No such file or directory" repeated:
 
 - Container is up but sshd inside isn't ready. `tests/run-tests.sh` waits up to 30 seconds. If your machine is slow or the test image is rebuilding, increase the timeout in `run-tests.sh`.
 
+## `git reset --hard` (or similar destructive git commands) refused by Claude
+
+Starting with Claude Code 2.1.183, commands that irrecoverably destroy work are blocked in
+auto-approve mode: `git reset --hard`, `git checkout -- .`, `git clean -fd`,
+`git stash drop`, `git commit --amend` (when the commit was not made by Claude
+this session), and infra-destroy commands (`terraform destroy`, `pulumi destroy`,
+`cdk destroy`).
+
+Because remote-launcher passes `--allowedTools 'Bash(*)'` by default, the agent
+runs in auto-approve mode and these restrictions apply — even though the commands
+would run on a remote VM.
+
+**Workarounds:**
+
+- **Ask Claude explicitly.** The block is lifted when the user's current message
+  specifically requests the destructive action ("please run `git reset --hard HEAD~1`").
+- **Run it yourself.** SSH directly to the VM and run the command manually.
+- **Use `--confirm-bash`** (`remote-launcher myvm --confirm-bash`). With Bash
+  prompts on, auto-approve mode is not engaged and the restriction does not apply.
+
 ## Multi-agent: agents see stale state from each other
 
 This shouldn't happen — each `remote-launcher` invocation has a unique `VM_REMOTE_SESSION`. If it does:
