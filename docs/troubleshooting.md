@@ -74,6 +74,20 @@ would run on a remote VM.
 - **Use `--confirm-bash`** (`remote-launcher myvm --confirm-bash`). With Bash
   prompts on, auto-approve mode is not engaged and the restriction does not apply.
 
+## Unattended session stops retrying after too many API errors
+
+Starting with Claude Code 2.1.186, `CLAUDE_CODE_MAX_RETRIES` is capped at 15.
+If you were relying on a higher value to keep a long-running remote session alive
+through API blips, use `CLAUDE_CODE_RETRY_WATCHDOG` instead — it is designed
+for unattended sessions and is not capped the same way.
+
+Add it to the `remote-launcher` invocation or your shell environment:
+
+```bash
+export CLAUDE_CODE_RETRY_WATCHDOG=1
+remote-launcher myvm
+```
+
 ## Multi-agent: agents see stale state from each other
 
 This shouldn't happen — each `remote-launcher` invocation has a unique `VM_REMOTE_SESSION`. If it does:
