@@ -59,3 +59,29 @@ If you see "Control socket connect: No such file or directory" repeated:
 This shouldn't happen — each `remote-launcher` invocation has a unique `VM_REMOTE_SESSION`. If it does:
 - Verify by running `env | grep VM_REMOTE_SESSION` inside one Claude — it should be unique per terminal.
 - Check `$TMPDIR/remote-launcher-*` — there should be one directory per running session.
+
+## Dynamic Workflows: Bash calls fail or hang under heavy parallelism
+
+**Symptom:** with many parallel subagents, some Bash commands time out or produce "Connection refused on control socket".
+
+**Cause:** all subagents share one SSH ControlMaster connection. OpenSSH's default `MaxSessions=10` limits how many commands can run simultaneously over that connection. When more than 10 subagents invoke Bash at the same moment, the excess are queued — and if your SSH `ServerAliveInterval` fires before the queue drains, you get a timeout.
+
+**Fix:** raise `MaxSessions` in the VM's `/etc/ssh/sshd_config`:
+
+```
+MaxSessions 50
+```
+
+Then `sudo systemctl reload sshd` (or equivalent). Tune the value to the maximum parallelism you expect from Dynamic Workflows.
+
+## Dynamic Workflows: subagents land in the wrong directory
+
+**Cause:** subagents inherit `CLAUDE_CODE_SHELL` and run on the VM, but they share the same per-session working-directory file. A `cd` in one subagent's call races with a `cd` in another.
+
+**Fix:** write every subagent Bash call with an explicit absolute path:
+
+```bash
+cd /absolute/path && your-command
+```
+
+Never rely on a `cd` from a previous call persisting when subagents run concurrently.
