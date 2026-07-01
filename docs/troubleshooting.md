@@ -88,6 +88,26 @@ export CLAUDE_CODE_RETRY_WATCHDOG=1
 remote-launcher myvm
 ```
 
+## Session killed mid-command with no error ("stream watchdog")
+
+Starting with Claude Code 2.1.196, a **stream watchdog** is enabled by default with a 5-minute timeout. If a Bash command runs for more than 5 minutes without emitting any output, Claude Code treats the stream as stalled and aborts the session.
+
+This is most likely to bite long-running silent commands on the VM: `make`, `cargo build`, `npm install`, large `rsync` transfers, database dumps, etc.
+
+**Workarounds:**
+
+- **Enable progress output.** Add a verbose/progress flag (`--verbose`, `-v`, `--progress`, etc.) so the tool keeps printing.
+- **Wrap the command with a heartbeat:**
+  ```bash
+  (cmd & pid=$!; while kill -0 "$pid" 2>/dev/null; do sleep 60; echo "[still running…]"; done; wait "$pid")
+  ```
+- **Run in background and poll:**
+  ```bash
+  nohup cmd > /tmp/out.log 2>&1 &
+  # in subsequent Bash calls:
+  tail -n 20 /tmp/out.log
+  ```
+
 ## Multi-agent: agents see stale state from each other
 
 This shouldn't happen — each `remote-launcher` invocation has a unique `VM_REMOTE_SESSION`. If it does:
