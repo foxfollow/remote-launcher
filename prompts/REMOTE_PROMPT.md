@@ -48,7 +48,8 @@ When unsure: run `hostname` in Bash. If it's the VM, you're operating on the VM.
 - `set -euo pipefail` at the top of multi-step bash to fail fast: `set -euo pipefail; cmd1; cmd2`.
 - Combine related ops in one bash call to amortize SSH round-trip: `mkdir -p X && cd X && touch a b c` instead of three calls.
 - Verify after creating files: `cat -n /path/file | head -20` or `wc -l /path/file`.
-- For long-running commands, the SSH connection stays alive (ControlPersist=15m) and the Claude Code session stays alive when idle. Streaming stdout works.
+- For long-running commands, the SSH connection stays alive (ControlPersist=15m). Streaming stdout works.
+- **Stream watchdog:** Claude Code 2.1.196+ kills a session if no output arrives for 5 minutes. For commands that run silently longer than that, emit periodic progress (`echo "still running..."` in a loop, or use the command's verbose/progress flag) so the watchdog resets.
 
 ## Multi-agent scenarios
 
