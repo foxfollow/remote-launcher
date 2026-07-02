@@ -88,6 +88,11 @@ export CLAUDE_CODE_RETRY_WATCHDOG=1
 remote-launcher myvm
 ```
 
+**Note (2.1.198+):** brief network drops that interrupt a response mid-stream
+(ECONNRESET and similar transient errors) now retry automatically with backoff
+instead of aborting the turn. This covers the common case of a momentary WiFi
+blip while a long assistant response is streaming — no workaround needed.
+
 ## Session killed mid-command with no error ("stream watchdog")
 
 Starting with Claude Code 2.1.196, a **stream watchdog** is enabled by default with a 5-minute timeout. If a Bash command runs for more than 5 minutes without emitting any output, Claude Code treats the stream as stalled and aborts the session.
