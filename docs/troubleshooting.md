@@ -113,6 +113,15 @@ This is most likely to bite long-running silent commands on the VM: `make`, `car
   tail -n 20 /tmp/out.log
   ```
 
+## Background agent fails to start over SSH on macOS ("Could not switch to audit session")
+
+This is a regression introduced in Claude Code **2.1.196** and fixed in **2.1.199**. If you're on 2.1.196–2.1.198 and running background agents (`claude --bg`) on macOS from an SSH session, the daemon process fails to cold-start with the error "Could not switch to audit session".
+
+**Fix:** upgrade to Claude Code 2.1.199+:
+```bash
+npm install -g @anthropic-ai/claude-code@latest
+```
+
 ## Multi-agent: agents see stale state from each other
 
 This shouldn't happen — each `remote-launcher` invocation has a unique `VM_REMOTE_SESSION`. If it does:
