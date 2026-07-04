@@ -122,6 +122,36 @@ This is a regression introduced in Claude Code **2.1.196** and fixed in **2.1.19
 npm install -g @anthropic-ai/claude-code@latest
 ```
 
+## Read/Edit/Write calls now prompt for approval (default permission mode changed)
+
+Starting with Claude Code **2.1.200**, the default permission mode changed from `default` to `Manual`. In `Manual` mode every tool call requires explicit approval unless it is listed in `--allowedTools`. Previously `default` mode would auto-approve Read calls (non-destructive reads of Mac files).
+
+`remote-launcher` always passes `--allowedTools 'Bash(*)'`, which auto-approves Bash (the VM side). Read/Edit/Write were already prompted in the common case. If you notice more prompts than before, this is why.
+
+**If you want to restore the old auto-read behaviour:**
+
+```bash
+remote-launcher myvm -- --permission-mode default
+```
+
+Or permanently add more tools to the auto-approve list with `--allowedTools`:
+
+```bash
+remote-launcher myvm -- --allowedTools 'Bash(*),Read(*)'
+```
+
+## Unattended session stalls on `AskUserQuestion` dialog
+
+Starting with Claude Code **2.1.200**, `AskUserQuestion` dialogs no longer auto-continue. Previously they would advance automatically after a timeout; now they block indefinitely waiting for user input.
+
+This affects remote/SSH sessions where no one is watching the terminal. If Claude asks a clarifying question (rare, but possible on ambiguous tasks), the session will hang until someone responds or the session is terminated.
+
+**Mitigations:**
+
+- Front-load all required decisions in the initial task description so Claude doesn't need to ask.
+- Use `--append-system-prompt` (via `--task`) to instruct Claude: "Make your best assumption rather than asking questions."
+- For long-running unattended tasks, attach a `tmux` pane so you can spot and answer any dialogs that appear.
+
 ## Multi-agent: agents see stale state from each other
 
 This shouldn't happen — each `remote-launcher` invocation has a unique `VM_REMOTE_SESSION`. If it does:
