@@ -88,6 +88,83 @@ export CLAUDE_CODE_RETRY_WATCHDOG=1
 remote-launcher myvm
 ```
 
+**Note (2.1.196+):** the streaming idle watchdog is now on by default for all
+providers — when the **API response stream** produces no events for 5 minutes,
+the request is aborted and retried automatically. This watches the model's
+response stream, not your Bash commands: a long-running silent command on the
+VM does not trip it. Set `CLAUDE_ENABLE_STREAM_WATCHDOG=0` to disable.
+
+**Note (2.1.198+):** brief network drops that interrupt a response mid-stream
+(ECONNRESET and similar transient errors) now retry automatically with backoff
+instead of aborting the turn. This covers the common case of a momentary WiFi
+blip while a long assistant response is streaming — no workaround needed.
+
+## Background agent over SSH fails with "Could not switch to audit session"
+
+On macOS, launching a background agent (`claude --bg`) from an SSH session
+could fail to cold-start with "Could not switch to audit session". Fixed in
+Claude Code **2.1.199** — upgrade:
+
+```bash
+npm install -g @anthropic-ai/claude-code@latest
+```
+
+Note this affects `claude --bg` started over SSH *into a Mac* — not
+remote-launcher's normal mode, where Claude runs locally on the Mac and only
+Bash crosses SSH to the VM.
+
+## Unattended session stalls on an `AskUserQuestion` dialog
+
+Starting with Claude Code **2.1.200**, `AskUserQuestion` dialogs no longer
+auto-continue by default — they block until answered. In an unattended
+remote/SSH session where nobody is watching the terminal, a clarifying
+question (rare, but possible on ambiguous tasks) can stall the run.
+
+**Mitigations:**
+
+- **Opt into an idle timeout via `/config`** — the dialog then auto-continues
+  after the configured idle period. This is the official knob for unattended
+  sessions.
+- Front-load all required decisions in the initial task description so Claude
+  doesn't need to ask.
+- For long-running unattended tasks, keep a `tmux` pane attached so you can
+  spot and answer any dialog that appears.
+
+## Dynamic Workflows: Bash calls fail under heavy parallelism
+
+**Symptom:** with many parallel subagents, some Bash calls fail with SSH mux
+errors ("mux_client_request_session: session request failed", "Connection
+refused on control socket") or time out.
+
+**Cause:** all subagents in one session share one SSH ControlMaster connection
+per host. OpenSSH's server-side default `MaxSessions 10` caps how many
+multiplexed sessions can be open on that connection at once; sessions beyond
+the cap are refused. Each Bash call also briefly opens a second session to
+read back the working directory, so the ceiling is reached sooner than "10
+parallel commands".
+
+**Fix:** raise `MaxSessions` in the VM's `/etc/ssh/sshd_config`:
+
+```
+MaxSessions 50
+```
+
+Then `sudo systemctl reload sshd` (or your init system's equivalent). Tune the
+value to the maximum parallelism you expect.
+
+## Dynamic Workflows: subagents land in the wrong directory
+
+**Cause:** subagents inherit `CLAUDE_CODE_SHELL` and the `VM_REMOTE_*` env
+vars, so their Bash calls route to the VM — but they share the session's
+per-host working-directory file (`$TMPDIR/remote-launcher-<session>/cwd-<host>`).
+Every call starts from that file's cwd and writes its own cwd back on exit, so
+concurrent `cd` calls race each other.
+
+**Fix:** in subagent Bash calls, don't rely on the sticky cwd — use absolute
+paths everywhere, or open each call with an explicit `cd /absolute/path && …`.
+Never rely on a `cd` from a previous call persisting when subagents run
+concurrently.
+
 ## Multi-agent: agents see stale state from each other
 
 This shouldn't happen — each `remote-launcher` invocation has a unique `VM_REMOTE_SESSION`. If it does:
