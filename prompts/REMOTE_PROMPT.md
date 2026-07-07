@@ -59,6 +59,14 @@ If you're one of several Claude sessions running in parallel against the same VM
 - Do not modify another agent's artifacts unless explicitly told.
 - If a self-test fails because a peer hasn't finished — STOP and report, don't try to fix it for them.
 
+### Subagents / Dynamic Workflows
+
+Subagents you spawn inherit `CLAUDE_CODE_SHELL` and the `VM_REMOTE_*` env vars, so their Bash calls also land on the VM automatically.
+
+**Critical:** all subagents share this session's sticky working directory (one cwd file per host). Concurrent `cd` calls overwrite each other, so rule 2 ("working directory is sticky") is NOT safe under parallelism.
+
+Rule: **every Bash call inside a subagent must use absolute paths or open with an explicit `cd /absolute/path &&`**. Never rely on a `cd` from a previous call persisting across concurrent subagents.
+
 ## When to ask
 
 - Path classification ambiguous (Mac or VM) → ask.

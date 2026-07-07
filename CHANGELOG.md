@@ -4,6 +4,15 @@ All notable changes to remote-launcher will be documented here.
 
 ## [Unreleased]
 
+### Docs
+- Troubleshooting: streaming idle watchdog (on by default since Claude Code 2.1.196) aborts and **retries** a stalled API response stream — it does not affect silent Bash commands; transient mid-stream network drops auto-retry since 2.1.198.
+- Troubleshooting: `AskUserQuestion` dialogs no longer auto-continue by default (Claude Code 2.1.200) — opt into an idle timeout via `/config` for unattended sessions.
+- Troubleshooting: background agents (`claude --bg`) over SSH into a Mac failed with "Could not switch to audit session" — fixed in Claude Code 2.1.199.
+- Troubleshooting + REMOTE_PROMPT: Dynamic Workflows — parallel subagents share one ControlMaster connection per host (raise `MaxSessions` on the VM) and one sticky-cwd file (use absolute paths in subagent Bash calls).
+
+### Tracking
+- Bumped Claude Code tracked version to 2.1.202.
+
 ## [0.2.3]
 
 ### Added
