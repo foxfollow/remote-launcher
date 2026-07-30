@@ -178,7 +178,12 @@ esac
 [[ -x "$SHELL_WRAPPER" ]] || { echo "remote-launcher: $SHELL_WRAPPER missing or not executable" >&2; exit 1; }
 command -v claude >/dev/null || { echo "remote-launcher: 'claude' not found in PATH" >&2; exit 1; }
 
+# Probes run with BatchMode=yes so a locked key or a password-only host fails
+# fast instead of hanging on a prompt we can't see. SSH_PROMPT_OPTS is the same
+# connection with prompting re-enabled — used only by ssh_auth_recover after a
+# batch attempt already failed with an auth error.
 SSH_DETECT_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+SSH_PROMPT_OPTS=(-o ConnectTimeout=10 -o BatchMode=no -o StrictHostKeyChecking=accept-new)
 
 # VM_SSH_OPTS flows through to every ssh invocation (preflight, probes, AND
 # the wrapper's runtime calls). Lets manual-multi-vm.sh and the test harness
@@ -186,15 +191,103 @@ SSH_DETECT_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=a
 if [[ -n "${VM_SSH_OPTS:-}" ]]; then
   read -ra _VM_SSH_OPTS_ARR <<< "$VM_SSH_OPTS"
   SSH_DETECT_OPTS+=("${_VM_SSH_OPTS_ARR[@]}")
+  SSH_PROMPT_OPTS+=("${_VM_SSH_OPTS_ARR[@]}")
 fi
+
+# Session id is needed before the preflight loop: ssh_auth_recover may open the
+# very ControlMaster socket ssh-shell will later reuse, and that path embeds it.
+SESSION_ID="$$-$(date +%s)"
+
+# Mirror ssh-shell's socket naming so a connection we authenticate here is the
+# one the wrapper picks up (see bin/ssh-shell: SSH_CTL).
+host_slug() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+ssh_ctl_path() { printf '%s/rl-%s-%s.s' "$HOME/.ssh" "$SESSION_ID" "$(host_slug "$1")"; }
+
+# key_in_agent <private-key-path> — true if ssh-agent already holds this key.
+key_in_agent() {
+  local fp
+  fp=$(ssh-keygen -lf "$1.pub" 2>/dev/null || ssh-keygen -lf "$1" 2>/dev/null) || return 1
+  fp=$(printf '%s\n' "$fp" | awk '{print $2}')
+  [[ -n "$fp" ]] || return 1
+  ssh-add -l 2>/dev/null | awk '{print $2}' | grep -qxF "$fp"
+}
+
+# ssh_auth_recover <host> — last chance after BatchMode auth failed. The usual
+# cause is a passphrase-protected key no agent holds, or a host that wants a
+# password; both are fixable if ssh is allowed to ask. Two steps:
+#   1. ssh-add the key ssh would have used — one passphrase prompt, and every
+#      later connection benefits, including ssh-shell's (still BatchMode=yes).
+#   2. failing that, connect interactively while opening the ControlMaster
+#      socket ssh-shell reuses, so a password typed once covers the session.
+# Returns 0 once the plain BatchMode probe (or the master) works.
+ssh_auth_recover() {
+  local host="$1"
+  local kf ans ctl
+  # /dev/tty exists even with no controlling terminal (cron, CI, a pipe) —
+  # only an actual open tells us we can prompt.
+  # (2>/dev/null first — bash applies redirections left to right and would
+  # otherwise print its own "cannot open /dev/tty" before we silence it.)
+  if ! : 2>/dev/null </dev/tty; then
+    echo "[remote-launcher] $host: no terminal available to ask for a passphrase." >&2
+    return 1
+  fi
+
+  if [[ -n "${SSH_AUTH_SOCK:-}" ]] && command -v ssh-add >/dev/null 2>&1; then
+    while read -r kf; do
+      kf="${kf/#\~/$HOME}"
+      [[ -f "$kf" ]] || continue
+      key_in_agent "$kf" && continue
+      printf "[remote-launcher] %s: key auth failed. Unlock %s and add it to ssh-agent? [Y/n] " "$host" "$kf" >&2
+      read -r ans </dev/tty || ans="n"
+      case "$ans" in n|N|no|No|NO) continue ;; esac
+      ssh-add "$kf" </dev/tty || continue
+      # -n: this loop reads from a pipe; ssh must not eat the key list.
+      if ssh -n "${SSH_DETECT_OPTS[@]}" "$host" 'echo ok' >/dev/null 2>&1; then
+        echo "[remote-launcher] $host: authenticated with the unlocked key." >&2
+        return 0
+      fi
+    done < <(ssh -G "$host" 2>/dev/null | awk '$1=="identityfile" {print $2}')
+  fi
+
+  ctl=$(ssh_ctl_path "$host")
+  echo "[remote-launcher] $host: retrying interactively — enter the key passphrase or password if prompted." >&2
+  if ssh "${SSH_PROMPT_OPTS[@]}" \
+       -o ControlMaster=auto -o "ControlPath=$ctl" -o ControlPersist=8h \
+       "$host" 'echo ok' >/dev/null </dev/tty; then
+    echo "[remote-launcher] $host: authenticated; holding this connection open for the session." >&2
+    return 0
+  fi
+  return 1
+}
+
+# Errors worth re-trying with prompts enabled. An unreachable host or a DNS
+# failure is not — retrying there just burns a ConnectTimeout and asks the user
+# for a password that was never the problem.
+auth_error() {
+  printf '%s\n' "$1" | grep -qiE "permission denied|passphrase|too many authentication failures|authentications that can continue"
+}
+
+# Build the ssh options for one host into SSH_HOST_OPTS. Normally identical to
+# SSH_DETECT_OPTS; if ssh_auth_recover left a live master socket for this host,
+# route through it (ControlMaster=no = use an existing master, never create
+# one) so the probes don't have to re-authenticate.
+SSH_HOST_OPTS=()
+ssh_host_opts() {
+  local ctl
+  ctl=$(ssh_ctl_path "$1")
+  SSH_HOST_OPTS=("${SSH_DETECT_OPTS[@]}")
+  [[ -S "$ctl" ]] && SSH_HOST_OPTS+=(-o ControlMaster=no -o "ControlPath=$ctl")
+}
 
 probe_posix() {
   # $1 = host
-  ssh "${SSH_DETECT_OPTS[@]}" "$1" "/bin/sh -c 'echo __posix_ok__'" 2>/dev/null
+  ssh_host_opts "$1"
+  ssh "${SSH_HOST_OPTS[@]}" "$1" "/bin/sh -c 'echo __posix_ok__'" 2>/dev/null
 }
 probe_ps() {
   # $1 = host, $2 = pwsh|powershell
-  ssh "${SSH_DETECT_OPTS[@]}" "$1" "$2 -NoProfile -Command \"Write-Output __ps_ok__\"" 2>/dev/null
+  ssh_host_opts "$1"
+  ssh "${SSH_HOST_OPTS[@]}" "$1" "$2 -NoProfile -Command \"Write-Output __ps_ok__\"" 2>/dev/null
 }
 
 # Test SSH connectivity per host. Handle three cases:
@@ -229,11 +322,18 @@ ssh_preflight() {
     [[ "$resolved" != "$host" ]] && ssh-keygen -R "$host" >/dev/null 2>&1 || true
     if ssh "${SSH_DETECT_OPTS[@]}" "$host" 'echo ok' >/dev/null 2>&1; then
       echo "[remote-launcher] new host key accepted for $host."
+    elif ssh_auth_recover "$host"; then
+      echo "[remote-launcher] new host key accepted for $host."
     else
       echo "[remote-launcher] ERROR: cannot SSH to $host even after replacing host key" >&2
       exit 1
     fi
   else
+    if auth_error "$ssh_err"; then
+      # Show why the silent attempt failed before asking the user for anything.
+      echo "$ssh_err" | head -5 | sed 's/^/  /' >&2
+      ssh_auth_recover "$host" && return 0
+    fi
     echo "[remote-launcher] ERROR: cannot SSH to $host (key auth, host reachable, ~/.ssh/config?)" >&2
     [[ -n "$ssh_err" ]] && echo "$ssh_err" | head -5 >&2
     exit 1
@@ -367,8 +467,6 @@ if [[ -n "$TASK_FILE" ]]; then
   [[ -f "$TASK_FILE" ]] || { echo "remote-launcher: task file $TASK_FILE not found" >&2; exit 1; }
   APPEND_PROMPT+=$'\n\n---\n\n## User task\n\n'"$(cat "$TASK_FILE")"
 fi
-
-SESSION_ID="$$-$(date +%s)"
 
 if [[ ${#HOSTS[@]} -gt 1 ]]; then
   echo "[remote-launcher] launching Claude Code (session $SESSION_ID); bash → ${HOSTS[*]} (default: $DEFAULT_HOST)"

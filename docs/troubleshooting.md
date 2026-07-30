@@ -7,6 +7,30 @@ The wrapper failed at the bootstrap step. Check:
 - `~/.ssh/config` — does the alias resolve correctly?
 - `ssh -vvv <host>` — read the verbose output for the actual failure.
 
+## "Permission denied (publickey)" at launch
+
+The preflight probe runs with `BatchMode=yes`, so it fails instead of hanging on
+a prompt. Since 0.2.4 the launcher recovers instead of bailing: if the error
+looks like an auth failure it will, in order,
+
+1. offer to `ssh-add` the key `ssh -G <host>` says it would use (one passphrase
+   prompt; every later connection — including the wrapper's, which stay
+   `BatchMode=yes` — then works via the agent), and
+2. retry the connection with prompting enabled, opening the ControlMaster socket
+   `ssh-shell` reuses (`~/.ssh/rl-<session>-<host>.s`, `ControlPersist=8h`), so a
+   password typed once covers the whole session.
+
+If both fail it's a real authorization problem, not a locked key — check
+`ssh -vvv <host>` and the host's `authorized_keys`.
+
+Notes:
+- Recovery needs a terminal. Under `cron`/CI (no `/dev/tty`) the launcher says so
+  and exits — load the key into an agent beforehand.
+- Route 2 depends on the master connection staying alive. Loading the key into
+  the agent (route 1, or `ssh-add` before launching) is the sturdier fix.
+- Unreachable hosts and DNS failures are *not* retried interactively — you'd wait
+  out a timeout to be asked for a password that was never the problem.
+
 ## Claude says "command not found" but the command exists on the VM
 
 You're probably hitting one of two things:

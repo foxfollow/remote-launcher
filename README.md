@@ -36,7 +36,7 @@ The default Claude Code workflow for "operate on a remote box" is to install Cla
 
 - macOS (Apple Silicon recommended for the test harness; the launcher itself runs anywhere with `bash` + `ssh`)
 - Claude Code 2.0.65 or later 
-- SSH key auth to your target host (no passwords, no agent forwarding by default)
+- SSH access to your target host — key auth preferred (no agent forwarding by default). If the key is passphrase-protected or the host wants a password, the launcher prompts once at startup and reuses that authenticated connection for the session.
 - For tests: [apple/container](https://github.com/apple/container) (macOS 26+) and `jq`
 
 ## Install
