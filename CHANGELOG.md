@@ -4,6 +4,8 @@ All notable changes to remote-launcher will be documented here.
 
 ## [Unreleased]
 
+## [0.2.4]
+
 ### Fixed
 - `remote-launcher <host>` no longer gives up with `ERROR: cannot SSH to <host>` when the key needs a passphrase or the host wants a password. The preflight still probes with `BatchMode=yes` (fast, never hangs), but on an auth error it now offers to `ssh-add` the key `ssh -G` reports for that host, then falls back to an interactive connection that opens the same ControlMaster socket `ssh-shell` reuses (`ControlPersist=8h`) — so one prompt covers the session. Unreachable hosts and DNS failures are not retried interactively, and with no `/dev/tty` (cron/CI) the launcher reports that and exits as before.
 
