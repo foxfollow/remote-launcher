@@ -154,6 +154,24 @@ question (rare, but possible on ambiguous tasks) can stall the run.
 - For long-running unattended tasks, keep a `tmux` pane attached so you can
   spot and answer any dialog that appears.
 
+## Headless session fails with 401 authentication errors
+
+If a session running with `CLAUDE_CODE_OAUTH_TOKEN` suddenly started
+returning 401 errors mid-session and recovered only after a restart, the
+cause was a bug where a co-present stored login's short-lived token would
+transiently replace the long-lived `CLAUDE_CODE_OAUTH_TOKEN`, breaking
+headless sessions until restart. Fixed in Claude Code **2.1.225**:
+
+> "Fixed a transient 401 replacing a long-lived `CLAUDE_CODE_OAUTH_TOKEN`
+> with a stored login's short-lived token, breaking headless sessions
+> until restart"
+
+Upgrade to resolve it:
+
+```bash
+npm install -g @anthropic-ai/claude-code@latest
+```
+
 ## Dynamic Workflows: Bash calls fail under heavy parallelism
 
 **Symptom:** with many parallel subagents, some Bash calls fail with SSH mux
