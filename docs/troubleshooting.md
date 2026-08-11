@@ -154,23 +154,28 @@ question (rare, but possible on ambiguous tasks) can stall the run.
 - For long-running unattended tasks, keep a `tmux` pane attached so you can
   spot and answer any dialog that appears.
 
-## Headless session fails with 401 authentication errors
+## Unattended session fails mid-run with 401 errors
 
-If a session running with `CLAUDE_CODE_OAUTH_TOKEN` suddenly started
-returning 401 errors mid-session and recovered only after a restart, the
-cause was a bug where a co-present stored login's short-lived token would
-transiently replace the long-lived `CLAUDE_CODE_OAUTH_TOKEN`, breaking
-headless sessions until restart. Fixed in Claude Code **2.1.225**:
+**Symptom:** a long-running or headless (`-p`) session authenticated with
+`CLAUDE_CODE_OAUTH_TOKEN` starts returning 401s partway through, and only
+recovers after a restart.
 
-> "Fixed a transient 401 replacing a long-lived `CLAUDE_CODE_OAUTH_TOKEN`
-> with a stored login's short-lived token, breaking headless sessions
-> until restart"
-
-Upgrade to resolve it:
+**Cause:** with a stored interactive login present *as well as* the token, the
+login's short-lived token could transiently replace the long-lived
+`CLAUDE_CODE_OAUTH_TOKEN`. Fixed in Claude Code **2.1.225** — upgrade:
 
 ```bash
 npm install -g @anthropic-ai/claude-code@latest
 ```
+
+**Until you can upgrade,** keep just one credential on the Mac: either
+`claude auth logout` and rely on the token, or unset the token and rely on the
+stored login. `claude auth status` shows which one a session picked up.
+
+Note this is a Mac-side credential problem, not an SSH one — the launcher
+`exec`s `claude` on the Mac with your environment, and
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` keeps `CLAUDE_CODE_OAUTH_TOKEN` out of the
+Bash subprocess that crosses SSH, so the VM never sees the token either way.
 
 ## Dynamic Workflows: Bash calls fail under heavy parallelism
 
