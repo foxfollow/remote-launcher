@@ -154,6 +154,29 @@ question (rare, but possible on ambiguous tasks) can stall the run.
 - For long-running unattended tasks, keep a `tmux` pane attached so you can
   spot and answer any dialog that appears.
 
+## Unattended session fails mid-run with 401 errors
+
+**Symptom:** a long-running or headless (`-p`) session authenticated with
+`CLAUDE_CODE_OAUTH_TOKEN` starts returning 401s partway through, and only
+recovers after a restart.
+
+**Cause:** with a stored interactive login present *as well as* the token, the
+login's short-lived token could transiently replace the long-lived
+`CLAUDE_CODE_OAUTH_TOKEN`. Fixed in Claude Code **2.1.225** — upgrade:
+
+```bash
+npm install -g @anthropic-ai/claude-code@latest
+```
+
+**Until you can upgrade,** keep just one credential on the Mac: either
+`claude auth logout` and rely on the token, or unset the token and rely on the
+stored login. `claude auth status` shows which one a session picked up.
+
+Note this is a Mac-side credential problem, not an SSH one — the launcher
+`exec`s `claude` on the Mac with your environment, and
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` keeps `CLAUDE_CODE_OAUTH_TOKEN` out of the
+Bash subprocess that crosses SSH, so the VM never sees the token either way.
+
 ## Dynamic Workflows: Bash calls fail under heavy parallelism
 
 **Symptom:** with many parallel subagents, some Bash calls fail with SSH mux

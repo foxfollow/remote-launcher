@@ -4,6 +4,12 @@ All notable changes to remote-launcher will be documented here.
 
 ## [Unreleased]
 
+### Docs
+- Troubleshooting: an unattended or headless (`-p`) session authenticated with `CLAUDE_CODE_OAUTH_TOKEN` could start returning 401s mid-run when a stored interactive login was also present — fixed in Claude Code 2.1.225; until then, keep only one credential on the Mac. The token never reaches the VM either way (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`).
+
+### Tracking
+- Bumped Claude Code tracked version to 2.1.227. Reviewed 2.1.222–2.1.227 for project relevance; no code changes warranted.
+
 ## [0.2.4]
 
 ### Fixed
