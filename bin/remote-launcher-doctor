@@ -68,6 +68,18 @@ if [[ $# -ge 1 ]]; then
     echo "Summary: $PASS passed, $FAIL failed"; exit 1
   fi
 
+  # Which command transport will ssh-shell pick here? BusyBox firmware on
+  # consumer routers and base FreeBSD often ship no base64(1); the wrapper
+  # falls back to a printf-octal encoding, which works but puts ~3x more bytes
+  # on the wire. Either way it is worth naming, because a missing decoder used
+  # to break every Bash call.
+  if ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" \
+       "/bin/sh -c 'printf %s aGk= | base64 -d 2>/dev/null'" 2>/dev/null | grep -q '^hi$'; then
+    ok "remote base64 usable — base64 command transport"
+  else
+    ok "no usable remote base64 — falling back to printf-octal transport"
+  fi
+
   SESSION_ID="doctor-$$"
   out=$(VM_REMOTE_HOST="$HOST" VM_REMOTE_SESSION="$SESSION_ID" \
         "$PROJECT_DIR/bin/ssh-shell" -c 'echo "hostname=$(hostname); pwd=$(pwd)"')
@@ -75,6 +87,7 @@ if [[ $# -ge 1 ]]; then
     ok "ssh-shell wrapper round-trip: $out"
   else
     fail "ssh-shell round-trip — unexpected output: $out"
+    echo "     wrapper debug log: ${TMPDIR:-/tmp}/remote-launcher-$SESSION_ID/ssh-shell.log"
   fi
 
   out2=$(VM_REMOTE_HOST="$HOST" VM_REMOTE_SESSION="$SESSION_ID" \

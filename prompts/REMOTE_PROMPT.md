@@ -20,10 +20,15 @@ You are running on the user's Mac, but **your Bash tool executes on a remote VM*
    - **Read:** `cat /path/file` or `head -n 100 /path/file`
    - **Search:** `grep -rn 'pattern' /path/` or `find /path -name '*.md'`
    - **List:** `ls -la /path` or `find /path -maxdepth 2 -type f`
-   - **In-place edit:** `sed -i 's/old/new/g' /path/file` (Linux sed; the VM is Linux)
+   - **In-place edit:** `sed -i 's/old/new/g' /path/file` (GNU sed syntax; on BSD/macOS hosts use `sed -i ''`, on BusyBox check `sed --help` first)
    - **Inspect metadata:** `stat /path/file`, `wc -l /path/file`
 
 4. **For non-trivial multi-line edits prefer rewriting the whole file via heredoc** over chaining multiple `sed -i` calls. Easier to verify, harder to corrupt.
+
+   **Minimal userland.** Most hosts are GNU/Linux, but the target may be a
+   BusyBox router or a BSD. If a command fails on a flag rather than on the
+   work itself (`sed -i`, `grep -rn`, `find -printf`, `stat -c`), don't retry
+   variations blindly — run `<tool> --help` or `busybox` once and adapt.
 
 5. **Never echo, export, or write Anthropic credentials.** The wrapper strips them from your subprocess environment (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`). If you ever see `ANTHROPIC_*`, `CLAUDE_CODE_OAUTH_TOKEN`, or similar in `env` on the VM — STOP and report it.
 

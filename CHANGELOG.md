@@ -4,7 +4,17 @@ All notable changes to remote-launcher will be documented here.
 
 ## [Unreleased]
 
+### Fixed
+- Remote hosts without `base64` are supported again — previously **every** Bash call failed on them. The POSIX transport hard-required a `base64 -d` decoder on the far end, which BusyBox firmware on consumer routers (ASUSWRT, OpenWrt) and base FreeBSD do not ship. `ssh-shell` now probes the host once per session (`base64 -d`, `base64 --decode`, `base64 -D`, `openssl base64 -d`) and falls back to a `printf`-octal encoding that needs only a shell builtin. The result is cached per host in `$TMPDIR/remote-launcher-<session>/xfer-<host>`; an unreachable host is not cached.
+- A dead transport no longer reports success. The script used to be piped straight into the remote `/bin/sh`, so a missing decoder left that shell with empty stdin and it exited **0** — the wrapper returned exit 0 on every call while `base64: not found` came back as the command's output. The script is now decoded into a temp file and checked before execution, so a staging failure exits non-zero with a named error.
+- Long commands no longer risk "Argument list too long". Linux caps one argv entry at `MAX_ARG_STRLEN` (128 KiB) whatever `ARG_MAX` is, so a large heredoc could exceed it in a single ssh argument. Payloads over 60000 characters are now staged to the remote in chunks over the existing ControlMaster connection.
+- `remote-launcher-doctor <host>` reports which command transport a host gets (base64 or printf-octal), and points at the wrapper debug log when the round-trip check fails.
+- New test case `tests/cases/09-transport-fallback.sh` covering both encodings, exit-code propagation, quoting transparency, cwd persistence, and chunked staging. It uses a fake `ssh` on `PATH`, so it needs no VM and runs standalone.
+
 ### Docs
+- Architecture: documented the command transport (encodings, per-host probe, why the script is staged to a file instead of piped, chunked staging). The step-by-step "files involved per Bash call" list was stale — it described a raw multi-line program with no encoding at all, and named pre-multi-host state paths.
+- Troubleshooting: new section for the `base64: not found` symptom, ahead of the "command not found" section that would otherwise mislead.
+- README limitations + REMOTE_PROMPT: state that the remote needs little beyond a POSIX `/bin/sh`, and that the prompt's GNU-flavored tool advice (`sed -i`, `grep -rn`) needs adapting on BusyBox/BSD hosts.
 - Troubleshooting: an unattended or headless (`-p`) session authenticated with `CLAUDE_CODE_OAUTH_TOKEN` could start returning 401s mid-run when a stored interactive login was also present — fixed in Claude Code 2.1.225; until then, keep only one credential on the Mac. The token never reaches the VM either way (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`).
 
 ### Tracking

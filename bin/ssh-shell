@@ -220,9 +220,11 @@ TARGET_SLUG=$(host_slug "$TARGET_HOST")
 CWD_FILE="$STATE_DIR/cwd-$TARGET_SLUG"
 SHELL_MODE_FILE="$STATE_DIR/shell-mode-$TARGET_SLUG"
 PS_EXE_FILE="$STATE_DIR/ps-exe-$TARGET_SLUG"
+XFER_FILE="$STATE_DIR/xfer-$TARGET_SLUG"
 SSH_CTL="$SOCK_DIR/rl-${SESSION_ID}-${TARGET_SLUG}.s"
 REMOTE_PWD_BASENAME=".remote-launcher-cwd-${SESSION_ID}-${TARGET_SLUG}"
 REMOTE_PWD_FILE_POSIX="/tmp/${REMOTE_PWD_BASENAME}"
+REMOTE_STAGE_FILE="/tmp/.remote-launcher-cmd-${SESSION_ID}-${TARGET_SLUG}"
 
 # ---------- localhost: run on the Mac directly, no SSH ----------
 # When the target host is "localhost" we skip SSH entirely and run the command
@@ -308,6 +310,82 @@ probe_ps() {
   ssh "${SSH_OPTS[@]}" "$TARGET_HOST" "$1 -NoProfile -Command \"Write-Output __ps_ok__\"" 2>>"$DEBUG_LOG"
 }
 
+# ---------- POSIX command transport ----------
+# The remote script is never handed to the far end as raw syntax: the login
+# shell there may be tcsh (OPNsense/FreeBSD) or anything else that would
+# mangle it. We encode it, stage it into a temp file, and run it with an
+# explicit /bin/sh.
+#
+# Two encodings, in order of preference:
+#   base64 — 1.33x expansion, but needs a decoder on the remote host.
+#   octal  — 4x expansion, needs only `printf`, which is a shell builtin in
+#            ash/dash/bash. This is the universal floor. BusyBox firmware on
+#            consumer routers (ASUSWRT, OpenWrt) is routinely built without
+#            the base64 applet, and base FreeBSD ships no base64(1) either,
+#            so assuming a decoder exists breaks EVERY command on such hosts.
+# Which encoding a host can take is probed once per session, cached in
+# $XFER_FILE.
+
+# Ceiling for a single ssh argument. Linux caps one argv entry at
+# MAX_ARG_STRLEN (128 KiB) no matter how large ARG_MAX is, so a long heredoc
+# would otherwise die with "Argument list too long". Bigger payloads are
+# staged in chunks. Keep this a multiple of 4 so octal escapes never split.
+XFER_CHUNK_MAX=60000
+
+# encode_octal <string> — every byte as a \NNN escape. The result holds only
+# backslashes and digits: safe through any login shell, and free of '%' for
+# printf to read as a conversion spec.
+encode_octal() {
+  printf '%s' "$1" | od -An -v -to1 | tr -d ' \n' | sed 's/[0-7][0-7][0-7]/\\&/g'
+}
+
+# remote_sh_octal <script> — run a short script on the remote using nothing
+# but printf. Bootstraps the capability probe itself.
+remote_sh_octal() {
+  local oct
+  oct=$(encode_octal "$1")
+  ssh "${SSH_OPTS[@]}" "$TARGET_HOST" "/bin/sh -c 'printf \"$oct\" | /bin/sh'" 2>>"$DEBUG_LOG"
+}
+
+# probe_xfer — print "base64:<decoder>" or "octal". Non-zero when the host is
+# unreachable, so we retry next call instead of caching a wrong answer.
+probe_xfer() {
+  local out
+  out=$(remote_sh_octal 'for d in "base64 -d" "base64 --decode" "base64 -D" "openssl base64 -d"; do
+if [ "$(printf %s aGk= | $d 2>/dev/null)" = hi ]; then printf %s "__xfer__base64:$d"; exit 0; fi
+done
+printf %s __xfer__octal') || return 1
+  case "$out" in
+    *__xfer__base64:*) printf '%s' "base64:${out#*__xfer__base64:}" ;;
+    *__xfer__octal*)   printf '%s' "octal" ;;
+    *) return 1 ;;
+  esac
+}
+
+# stage_chunked — append $PAYLOAD to the remote staging file in pieces, so no
+# single ssh argument crosses the per-argument limit. ControlMaster keeps the
+# extra hops cheap.
+stage_chunked() {
+  local off=0 chunk enc="$REMOTE_STAGE_FILE.enc"
+  ssh "${SSH_OPTS[@]}" "$TARGET_HOST" \
+    "/bin/sh -c 'rm -f $REMOTE_STAGE_FILE $enc'" 2>>"$DEBUG_LOG" || return 1
+  while (( off < ${#PAYLOAD} )); do
+    chunk="${PAYLOAD:off:XFER_CHUNK_MAX}"
+    if [[ -n "$XFER_DECODER" ]]; then
+      ssh "${SSH_OPTS[@]}" "$TARGET_HOST" \
+        "/bin/sh -c 'printf %s $chunk >> $enc'" 2>>"$DEBUG_LOG" || return 1
+    else
+      ssh "${SSH_OPTS[@]}" "$TARGET_HOST" \
+        "/bin/sh -c 'printf \"$chunk\" >> $REMOTE_STAGE_FILE'" 2>>"$DEBUG_LOG" || return 1
+    fi
+    off=$(( off + XFER_CHUNK_MAX ))
+  done
+  if [[ -n "$XFER_DECODER" ]]; then
+    ssh "${SSH_OPTS[@]}" "$TARGET_HOST" \
+      "/bin/sh -c '$XFER_DECODER < $enc > $REMOTE_STAGE_FILE; rm -f $enc'" 2>>"$DEBUG_LOG" || return 1
+  fi
+}
+
 # Bootstrap: resolve $HOME on this host if we don't have a cwd yet.
 if [[ ! -s "$CWD_FILE" ]]; then
   echo "--- bootstrap ssh stderr ($TARGET_HOST) ---" >> "$DEBUG_LOG" 2>/dev/null || true
@@ -361,6 +439,22 @@ fi
 
 CWD=$(<"$CWD_FILE")
 [[ -z "$CWD" ]] && CWD='$HOME'
+
+# Resolve (and cache) the command transport for POSIX hosts.
+XFER=""
+XFER_DECODER=""
+if [[ "$SHELL_MODE" != "powershell" ]]; then
+  if [[ -s "$XFER_FILE" ]]; then
+    XFER=$(<"$XFER_FILE")
+  elif XFER=$(probe_xfer); then
+    printf '%s\n' "$XFER" > "$XFER_FILE"
+  else
+    # Host unreachable during the probe. Use the encoding that needs nothing
+    # on the far end and let the real command report the failure — don't
+    # cache a guess.
+    XFER="octal"
+  fi
+fi
 
 if [[ "$SHELL_MODE" == "powershell" ]]; then
   # ---------- PowerShell execution path ----------
@@ -418,18 +512,44 @@ PSEOF
     2>/dev/null | tr -d '\r' | tr -d '\n' || true)
 else
   # ---------- POSIX execution path ----------
-  # Build the remote script and base64-encode it so the remote login shell
-  # (tcsh on OPNsense/FreeBSD, dash, etc.) never interprets the syntax.
-  # We always exec /bin/sh explicitly on the far end.
+  # The script is encoded (see "POSIX command transport" above), staged into a
+  # temp file on the far end, and run with an explicit /bin/sh — the remote
+  # login shell never sees raw syntax.
   REMOTE_SCRIPT="cd '$CWD' 2>/dev/null || cd \$HOME
 $CMD
 __EC=\$?
 pwd > '$REMOTE_PWD_FILE_POSIX' 2>/dev/null
 exit \$__EC"
 
-  SCRIPT_B64=$(printf '%s\n' "$REMOTE_SCRIPT" | base64 | tr -d '\n')
+  if [[ "$XFER" == base64:* ]]; then
+    XFER_DECODER="${XFER#base64:}"
+    PAYLOAD=$(printf '%s\n' "$REMOTE_SCRIPT" | base64 | tr -d '\n')
+    # Unquoted printf %s is safe here: base64 output is [A-Za-z0-9+/=] only.
+    WRITE_EXPR="printf %s $PAYLOAD | $XFER_DECODER > \$f"
+  else
+    XFER_DECODER=""
+    PAYLOAD=$(encode_octal "$REMOTE_SCRIPT"$'\n')
+    WRITE_EXPR="printf \"$PAYLOAD\" > \$f"
+  fi
 
-  ssh "${SSH_OPTS[@]}" "$TARGET_HOST" "/bin/sh -c 'printf %s $SCRIPT_B64 | base64 -d | /bin/sh'"
+  if (( ${#PAYLOAD} > XFER_CHUNK_MAX )); then
+    if stage_chunked; then
+      WRITE_EXPR=":"    # already on the remote
+    else
+      echo "ssh-shell: failed to stage command on $TARGET_HOST (see $DEBUG_LOG)" >&2
+      exit 255
+    fi
+  fi
+
+  # Decode into a file and check it BEFORE executing. The old form piped
+  # straight into /bin/sh, so a missing decoder left that shell with empty
+  # stdin and it exited 0 — the transport was dead while the wrapper reported
+  # success on every call.
+  RUN_SCRIPT="f=$REMOTE_STAGE_FILE; $WRITE_EXPR 2>/dev/null; \
+[ -s \$f ] || { echo ssh-shell: could not stage command on remote host >&2; rm -f \$f; exit 127; }; \
+/bin/sh \$f < /dev/null; __rc=\$?; rm -f \$f; exit \$__rc"
+
+  ssh "${SSH_OPTS[@]}" "$TARGET_HOST" "/bin/sh -c '$RUN_SCRIPT'"
   EC=$?
 
   # Pull updated cwd back. ControlMaster makes this cheap.
