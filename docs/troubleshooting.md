@@ -75,6 +75,27 @@ You're probably hitting one of two things:
 1. `PATH` differs from your interactive ssh shell. Each remote-launcher bash call is a non-interactive shell — it sources `~/.bashrc` only if `BASH_ENV` is set. If your tooling lives in `/opt/<tool>/bin`, add it to `~/.profile` or use full paths.
 2. The command is a function/alias defined in `~/.bashrc`. Non-interactive shells skip `.bashrc`. Use the actual binary.
 
+## `@host` prefix ignored — `eval: @localhost: not found`
+
+Symptom: in a multi-host session, `@localhost hostname` (or any `@host …`) fails with
+
+```
+/bin/sh: 1: eval: @localhost: not found
+```
+
+and the error comes from the **default** host, not the one you addressed. The prefix was never recognised, so the whole command went to the default host verbatim.
+
+Cause: Claude Code's Bash tool wraps every command in a bash prelude ending in `eval '<your command>'`, and that prelude changes between releases (2.1.173 added snapshot sourcing, 2.1.258 added a `{ \builtin unalias … }` block). Older `ssh-shell` versions matched the prelude as one exact string, so a new release silently broke routing. Since 0.2.5 `ssh-shell` anchors on the stable `shopt -u extglob` token and takes the first `eval '` after it, so extra prelude is tolerated.
+
+If you still see this, check which wrapper is actually running — `rl-set-team`/`remote-launcher` on `PATH` may be an older Homebrew install rather than your checkout:
+
+```
+which remote-launcher        # ~/.local/bin/… (install.sh) or /opt/homebrew/bin/… (brew)
+remote-launcher --version
+```
+
+Then upgrade (`brew upgrade remote-launcher`) or run `./install.sh` from the checkout, which puts `~/.local/bin` symlinks ahead of Homebrew. Regression test: `bash tests/cases/08-wrapped-localhost-routing.sh` (no VM needed).
+
 ## `cd` in one Bash call doesn't persist to the next
 
 Run `remote-launcher-doctor <host>` and check the cwd persistence test. If it fails:
