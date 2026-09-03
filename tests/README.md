@@ -35,8 +35,18 @@ By default the harness:
 | `04-env-scrub.sh` | Anthropic env vars do NOT cross to VM |
 | `05-no-agent-forwarding.sh` | SSH agent socket not exposed on VM |
 | `06-multi-session-isolation.sh` | Two sessions have independent cwds |
+| `07-multi-host-routing.sh` | `@host` routing, per-host cwd/socket isolation |
+| `08-wrapped-localhost-routing.sh` | `@host` routing against Claude's real wrapped command form |
+| `09-transport-fallback.sh` | base64 and printf-octal transports, exit codes, chunked staging |
 
 Each case is a standalone bash script that sources `lib/assert.sh` and `lib/helpers.sh`.
+
+Cases 08 and 09 need no VM — 08 routes through the `localhost` path, 09 uses a
+fake `ssh` on `PATH`. Run either directly:
+
+```bash
+bash tests/cases/09-transport-fallback.sh
+```
 
 ## Adding a test
 
