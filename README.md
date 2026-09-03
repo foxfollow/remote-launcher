@@ -313,6 +313,12 @@ The harness uses Apple's `container` to spin up an Ubuntu micro-VM with sshd, ge
 - Interactive TUIs (`vim`, `htop`) on the VM may render poorly — the wrapper does not allocate a pty.
 - Each shell call is a fresh remote shell; environment and aliases do not persist between calls. Working directory does (tracked via state file).
 - No file sync. By design — files live on the VM. To pull artifacts: `scp -r myvm:path ~/local`.
+- The remote host needs a POSIX `/bin/sh` and little else. `base64` is used for
+  the command transport when present and transparently replaced by a
+  `printf`-octal encoding when it isn't, so BusyBox routers (ASUSWRT, OpenWrt)
+  and base FreeBSD work — at ~3x the bytes on the wire. The system prompt does
+  assume GNU-flavored userland (`sed -i`, `grep -rn`), so on BusyBox expect to
+  correct the agent on tool flags.
 
 ## License
 

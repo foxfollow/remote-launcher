@@ -31,11 +31,70 @@ Notes:
 - Unreachable hosts and DNS failures are *not* retried interactively — you'd wait
   out a timeout to be asked for a password that was never the problem.
 
+## Every Bash call returns `base64: not found` (BusyBox routers, FreeBSD)
+
+**Symptom:** every single Bash call comes back with the same line —
+
+```
+/bin/sh: base64: not found
+```
+
+— and nothing else. Commands appear to "succeed" (exit 0), the launcher started
+cleanly, and `ssh <host> 'echo hi'` from your terminal works fine.
+
+**Cause:** the POSIX transport encodes each command and decodes it on the far
+end. Before 0.2.5 it assumed `base64 -d` existed there. BusyBox firmware on
+consumer routers (ASUSWRT, OpenWrt) is commonly built without the base64
+applet, and base FreeBSD has no `base64(1)` either. The decoder was missing, so
+the shell at the end of the pipe got empty stdin and exited 0 — which is why the
+failure looked like a successful command with strange output rather than an
+error.
+
+**Fix:** upgrade to 0.2.5 or later. `ssh-shell` now probes the host once per
+session and falls back to a `printf`-octal encoding that needs only a shell
+builtin. Nothing to configure.
+
+Confirm which transport a host gets:
+
+```
+remote-launcher-doctor <host>
+```
+
+It reports either `remote base64 usable — base64 command transport` or
+`no usable remote base64 — falling back to printf-octal transport`.
+
+**Note for embedded targets:** the octal encoding puts ~3x more bytes on the
+wire than base64 (4 characters per byte instead of 1.33). Irrelevant for
+ordinary commands; if you routinely write large files over a slow link to a
+BusyBox host, installing coreutils there (`opkg install coreutils-base64` on
+OpenWrt, an Entware package on ASUSWRT) restores the base64 path.
+
 ## Claude says "command not found" but the command exists on the VM
 
 You're probably hitting one of two things:
 1. `PATH` differs from your interactive ssh shell. Each remote-launcher bash call is a non-interactive shell — it sources `~/.bashrc` only if `BASH_ENV` is set. If your tooling lives in `/opt/<tool>/bin`, add it to `~/.profile` or use full paths.
 2. The command is a function/alias defined in `~/.bashrc`. Non-interactive shells skip `.bashrc`. Use the actual binary.
+
+## `@host` prefix ignored — `eval: @localhost: not found`
+
+Symptom: in a multi-host session, `@localhost hostname` (or any `@host …`) fails with
+
+```
+/bin/sh: 1: eval: @localhost: not found
+```
+
+and the error comes from the **default** host, not the one you addressed. The prefix was never recognised, so the whole command went to the default host verbatim.
+
+Cause: Claude Code's Bash tool wraps every command in a bash prelude ending in `eval '<your command>'`, and that prelude changes between releases (2.1.173 added snapshot sourcing, 2.1.258 added a `{ \builtin unalias … }` block). Older `ssh-shell` versions matched the prelude as one exact string, so a new release silently broke routing. Since 0.2.5 `ssh-shell` anchors on the stable `shopt -u extglob` token and takes the first `eval '` after it, so extra prelude is tolerated.
+
+If you still see this, check which wrapper is actually running — `rl-set-team`/`remote-launcher` on `PATH` may be an older Homebrew install rather than your checkout:
+
+```
+which remote-launcher        # ~/.local/bin/… (install.sh) or /opt/homebrew/bin/… (brew)
+remote-launcher --version
+```
+
+Then upgrade (`brew upgrade remote-launcher`) or run `./install.sh` from the checkout, which puts `~/.local/bin` symlinks ahead of Homebrew. Regression test: `bash tests/cases/08-wrapped-localhost-routing.sh` (no VM needed).
 
 ## `cd` in one Bash call doesn't persist to the next
 
