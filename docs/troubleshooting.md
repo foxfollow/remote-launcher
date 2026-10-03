@@ -157,6 +157,23 @@ would run on a remote VM.
 - **Use `--confirm-bash`** (`remote-launcher myvm --confirm-bash`). With Bash
   prompts on, auto-approve mode is not engaged and the restriction does not apply.
 
+## Dangerous `rm` commands no longer bypass the always-ask safeguard
+
+Because remote-launcher passes `--allowedTools 'Bash(*)'` by default, Bash
+calls are a "shell allow rule" in Claude Code's terms. Starting with Claude
+Code **2.1.288**:
+
+> Fixed a dangerous `rm` (such as one on `/` or the home directory) inside a
+> `bash -c` or `sh -c` script running without a prompt in bypassPermissions
+> mode or under a shell allow rule (anthropics/claude-code#96300)
+
+Before this fix, a destructive `rm` on `/` or a home directory could run
+through remote-launcher's default `Bash(*)` allow rule without triggering
+Claude's always-ask safeguard. After upgrading, such a command is caught by
+that safeguard like it would be without a shell allow rule. If you want
+remote-launcher's VM-side Bash calls to go through the normal prompt flow
+instead, use `--confirm-bash`.
+
 ## Unattended session stops retrying after too many API errors
 
 Starting with Claude Code 2.1.186, `CLAUDE_CODE_MAX_RETRIES` is capped at 15.
@@ -181,6 +198,17 @@ VM does not trip it. Set `CLAUDE_ENABLE_STREAM_WATCHDOG=0` to disable.
 (ECONNRESET and similar transient errors) now retry automatically with backoff
 instead of aborting the turn. This covers the common case of a momentary WiFi
 blip while a long assistant response is streaming — no workaround needed.
+
+**Note (2.1.288+):** a bug where `CLAUDE_CODE_RETRY_WATCHDOG` could keep
+retrying for hours after a very long response stream failed is fixed:
+
+> Fixed unattended sessions (`CLAUDE_CODE_RETRY_WATCHDOG`) retrying for hours
+> after a very long response stream failed; Claude Code now streams again,
+> and gives up after three timeouts
+
+If you rely on `CLAUDE_CODE_RETRY_WATCHDOG` to keep a long remote-launcher
+session alive, note it now gives up after three stream timeouts instead of
+retrying indefinitely.
 
 ## Background agent over SSH fails with "Could not switch to audit session"
 
