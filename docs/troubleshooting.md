@@ -210,6 +210,17 @@ If you rely on `CLAUDE_CODE_RETRY_WATCHDOG` to keep a long remote-launcher
 session alive, note it now gives up after three stream timeouts instead of
 retrying indefinitely.
 
+**Note (2.1.295+):** a new env var caps how long `CLAUDE_CODE_RETRY_WATCHDOG`
+will wait out rate-limit and overload errors:
+
+> Added `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` to limit how long unattended
+> retry mode (`CLAUDE_CODE_RETRY_WATCHDOG`) waits out 429 and 529 errors
+
+If an unattended remote-launcher session should give up on a stuck 429/529
+retry loop sooner than the default, set
+`CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` (milliseconds) alongside
+`CLAUDE_CODE_RETRY_WATCHDOG=1`.
+
 ## Background agent over SSH fails with "Could not switch to audit session"
 
 On macOS, launching a background agent (`claude --bg`) from an SSH session
