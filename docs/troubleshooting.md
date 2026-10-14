@@ -174,6 +174,18 @@ that safeguard like it would be without a shell allow rule. If you want
 remote-launcher's VM-side Bash calls to go through the normal prompt flow
 instead, use `--confirm-bash`.
 
+**Note (2.1.299+):** that same safeguard was narrowed to cut false positives:
+
+> Fixed rm prompts on shell `-c` scripts that don't run `rm`. An rm built at
+> run time in a script Claude Code can't read no longer prompts unless
+> `CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT=1`
+
+If you were seeing an unexpected `rm`-safeguard prompt on a VM-side script
+that builds its `rm` command at run time (e.g. from a variable Claude Code
+can't statically read), that stops after upgrading. To keep the stricter,
+prompt-on-any-dynamic-`rm` behavior instead, set
+`CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT=1`.
+
 ## Unattended session stops retrying after too many API errors
 
 Starting with Claude Code 2.1.186, `CLAUDE_CODE_MAX_RETRIES` is capped at 15.
