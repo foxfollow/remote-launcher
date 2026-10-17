@@ -8,6 +8,7 @@
 #   2.1.173  source …/snapshot-bash-….sh 2>/dev/null || true && export CLAUDE_CODE_VERSION="…"
 #            : && shopt -u extglob 2>/dev/null || true && eval '<inner>' < /dev/null && pwd …
 #   2.1.258  … && shopt -u extglob 2>/dev/null || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval '<inner>' < /dev/null && pwd …
+#   2.1.301  source …/snapshot-bash-….sh 2>/dev/null || true && export BUN_OPTIONS="--smol${BUN_OPTIONS:+ $BUN_OPTIONS}" && shopt -u extglob … (one line, same tail as 2.1.258)
 #
 # The parser used to anchor on CMD *starting* with `shopt … && eval '` (broken
 # by 2.1.173's prelude), then on that exact substring anywhere in CMD (broken by
@@ -55,6 +56,10 @@ wrap_cmd() {
         "export CLAUDE_CODE_VERSION=\"2.1.258 (Claude Code)\"" \
         ": && shopt -u extglob 2>/dev/null || true && { \\builtin unalias -- 'unsetenv'; \\builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval '${esc}' < /dev/null && pwd -P >| /tmp/claude-test-cwd"
       ;;
+    2.1.301)
+      printf '%s' \
+        "source ${SNAPSHOT_FILE} 2>/dev/null || true && export BUN_OPTIONS=\"--smol\${BUN_OPTIONS:+ \$BUN_OPTIONS}\" && shopt -u extglob 2>/dev/null || true && { \\builtin unalias -- 'unsetenv'; \\builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval '${esc}' < /dev/null && pwd -P >| /tmp/claude-test-cwd"
+      ;;
     *) echo "unknown WRAP_FORM=$WRAP_FORM" >&2; exit 1 ;;
   esac
 }
@@ -101,7 +106,7 @@ run_suite() {
   assert_contains "[$f] unknown host error names token" "@nope"  "$err_unknown"
 }
 
-for WRAP_FORM in 2.1.173 2.1.258; do
+for WRAP_FORM in 2.1.173 2.1.258 2.1.301; do
   run_suite
 done
 

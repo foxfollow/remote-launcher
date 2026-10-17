@@ -33,6 +33,20 @@ echo "remote-launcher-doctor (v$RL_VERSION)"
 PASS=0; FAIL=0
 ok()   { echo "  ✅ $1"; PASS=$((PASS+1)); }
 fail() { echo "  ❌ $1"; FAIL=$((FAIL+1)); }
+warn() { echo "  ⚠️  $1"; }
+
+# version_lt A B — true if dotted version A sorts before B (bash 3.2-safe).
+version_lt() {
+  local IFS=. i
+  local -a a b
+  read -r -a a <<< "$1"
+  read -r -a b <<< "$2"
+  for i in 0 1 2; do
+    (( 10#${a[i]:-0} < 10#${b[i]:-0} )) && return 0
+    (( 10#${a[i]:-0} > 10#${b[i]:-0} )) && return 1
+  done
+  return 1
+}
 
 echo "== file/setup checks =="
 [[ -d "$PROJECT_DIR" ]]                    && ok "project at $PROJECT_DIR" || fail "project dir missing"
@@ -55,6 +69,22 @@ else
 fi
 command -v claude >/dev/null && ok "claude in PATH" || fail "claude not in PATH"
 command -v ssh    >/dev/null && ok "ssh in PATH"    || fail "ssh not in PATH"
+
+# ssh-shell parses the exact command wrapper Claude Code sends, which changes
+# between releases, so name the installed version next to the tested one.
+if command -v claude >/dev/null; then
+  CC_TRACKED="$(tr -d '[:space:]' 2>/dev/null < "$PROJECT_DIR/.claude-code-version" || true)"
+  CC_VERSION="$(claude --version 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)"
+  if [[ -z "$CC_VERSION" ]]; then
+    warn "could not read 'claude --version'"
+  elif [[ -z "$CC_TRACKED" ]]; then
+    ok "Claude Code $CC_VERSION"
+  elif version_lt "$CC_VERSION" "$CC_TRACKED"; then
+    warn "Claude Code $CC_VERSION is older than $CC_TRACKED, the version remote-launcher was checked against — run 'claude update'"
+  else
+    ok "Claude Code $CC_VERSION (remote-launcher checked against $CC_TRACKED)"
+  fi
+fi
 
 if [[ $# -ge 1 ]]; then
   HOST="$1"
