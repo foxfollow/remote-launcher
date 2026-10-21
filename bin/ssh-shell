@@ -115,7 +115,8 @@ host_slug() {
 }
 
 # Parse args bash-style. Claude Code 2.1.x invokes the shell as
-# `<shell> -c -l <cmd>` (-c first, then -l, then the command string).
+# `<shell> -c -l <cmd>` for its shell-snapshot step and `<shell> -c <cmd>` for
+# each Bash tool call (both observed on 2.1.301).
 # Real bash treats -c, -l, --login etc. as independent flags in any order,
 # and the command for -c is the next non-flag positional. Replicate that.
 CMD=""
@@ -156,6 +157,7 @@ fi
 #   2.1.173+   source …/snapshot-bash-….sh 2>/dev/null || true && export CLAUDE_CODE_VERSION="…"
 #              : && shopt -u extglob 2>/dev/null || true && eval '<inner>' …
 #   2.1.258+   … && shopt -u extglob 2>/dev/null || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval '<inner>' …
+#   2.1.301    source …/snapshot-bash-….sh 2>/dev/null || true && export BUN_OPTIONS="--smol${BUN_OPTIONS:+ $BUN_OPTIONS}" && shopt -u extglob … (same as 2.1.258 from the anchor on)
 # (2.1.258 broke the previous exact-string match: `@localhost hostname` was
 # never seen as a prefix and went verbatim to the default host, dying with
 # "eval: @localhost: not found".)

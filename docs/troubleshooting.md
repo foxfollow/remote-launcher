@@ -157,6 +157,55 @@ would run on a remote VM.
 - **Use `--confirm-bash`** (`remote-launcher myvm --confirm-bash`). With Bash
   prompts on, auto-approve mode is not engaged and the restriction does not apply.
 
+## Claude Code's dangerous-`rm` safeguard under `Bash(*)`
+
+Because remote-launcher passes `--allowedTools 'Bash(*)'` by default, Bash
+calls run under what Claude Code's changelog calls a "Bash allow rule" or
+"shell allow rule". Claude Code still asks before some dangerous `rm`
+commands under such a rule, and these releases changed which ones:
+
+- **2.1.281** — a recursive `rm` aimed only at command-substitution output
+  now asks even with a Bash allow rule:
+
+  > Fixed a recursive `rm` whose target is only command-substitution output,
+  > such as `rm -rf "$(pwd)"`, running unprompted in auto and
+  > `--dangerously-skip-permissions` mode; it now asks even with a Bash allow
+  > rule, unless run with `CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT=1`
+
+- **2.1.287** — the safeguard is no longer lost when the same command also
+  redirects output to `~` or a wildcard path:
+
+  > Fixed a dangerous `rm` (such as one on `/` or the home directory) losing
+  > its always-ask safeguard when the same command also redirected output to
+  > a `~` or wildcard path
+
+- **2.1.288** — a dangerous `rm` inside a `bash -c` or `sh -c` script no
+  longer runs without a prompt under a shell allow rule:
+
+  > Fixed a dangerous `rm` (such as one on `/` or the home directory) inside a
+  > `bash -c` or `sh -c` script running without a prompt in bypassPermissions
+  > mode or under a shell allow rule (anthropics/claude-code#96300)
+
+- **2.1.299** — the `-c` script check was narrowed, and one case now asks
+  *less* than before:
+
+  > Fixed rm prompts on shell `-c` scripts that don't run `rm`. An rm built at
+  > run time in a script Claude Code can't read no longer prompts unless
+  > `CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT=1`
+
+  Under the default `Bash(*)` rule, such an `rm` now runs without asking.
+  Claude Code runs on your Mac while the scripts it calls live on the VM; the
+  changelog does not say whether that makes them scripts Claude Code "can't
+  read". To get the prompt back, export
+  `CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT=1` before running
+  `remote-launcher` — the launcher passes your environment through to
+  `claude`.
+
+These entries all describe `rm` commands. None of them mentions PowerShell's
+`Remove-Item`, so don't rely on them for a PowerShell host (`--shell
+powershell`, or one auto-detected as PowerShell). To have every Bash call ask
+first, whatever the host, use `--confirm-bash`.
+
 ## Unattended session stops retrying after too many API errors
 
 Starting with Claude Code 2.1.186, `CLAUDE_CODE_MAX_RETRIES` is capped at 15.
@@ -181,6 +230,41 @@ VM does not trip it. Set `CLAUDE_ENABLE_STREAM_WATCHDOG=0` to disable.
 (ECONNRESET and similar transient errors) now retry automatically with backoff
 instead of aborting the turn. This covers the common case of a momentary WiFi
 blip while a long assistant response is streaming — no workaround needed.
+
+**Note (2.1.281+):** an unattended session no longer dies on the first 5xx
+after waiting out rate limits:
+
+> Fixed `CLAUDE_CODE_RETRY_WATCHDOG` sessions failing on the first 5xx or
+> dropped connection after a run of 429/529 waits, and sleeping uncapped and
+> silently on a long `Retry-After` from a 5xx
+
+**Note (2.1.288+):** after a very long response stream fails, the watchdog
+now gives up instead of retrying for hours:
+
+> Fixed unattended sessions (`CLAUDE_CODE_RETRY_WATCHDOG`) retrying for hours
+> after a very long response stream failed; Claude Code now streams again,
+> and gives up after three timeouts
+
+If you rely on `CLAUDE_CODE_RETRY_WATCHDOG` to keep a long remote-launcher
+session alive, expect it to stop after those three timeouts.
+
+**Note (2.1.295+):** you can limit how long the watchdog waits out rate-limit
+(429) and overload (529) errors:
+
+> Added `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` to limit how long unattended
+> retry mode (`CLAUDE_CODE_RETRY_WATCHDOG`) waits out 429 and 529 errors
+
+Set it alongside `CLAUDE_CODE_RETRY_WATCHDOG=1`; the `_MS` suffix indicates
+milliseconds. The changelog does not give a default.
+
+**Note (2.1.301+):** you can also make the watchdog stop at a usage limit
+that resets too far away, instead of waiting for it:
+
+> Added `CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS` so unattended
+> retry mode (`CLAUDE_CODE_RETRY_WATCHDOG`) ends a request at a usage limit
+> that resets too far away instead of waiting
+
+As with the previous variable, the changelog does not give a default.
 
 ## Background agent over SSH fails with "Could not switch to audit session"
 

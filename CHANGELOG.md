@@ -4,6 +4,10 @@ All notable changes to remote-launcher will be documented here.
 
 ## [Unreleased]
 
+### Added
+- `remote-launcher-doctor` names the installed Claude Code version and warns (without failing) when it is older than the one in `.claude-code-version`. `ssh-shell` parses the exact command wrapper Claude Code sends, and that wrapper changes between releases.
+- `tests/cases/08-wrapped-localhost-routing.sh` covers the 2.1.301 wrapper form (`export BUN_OPTIONS=…` ahead of `shopt -u extglob`, all on one line), copied from a real 2.1.301 Bash call.
+
 ### Fixed
 - `@host` prefix routing works again on Claude Code 2.1.258+. The Bash tool's wrapper gained a `{ \builtin unalias -- 'unsetenv'; … } || true &&` block between `shopt -u extglob … || true &&` and `eval '`, so `ssh-shell`'s exact-string marker no longer matched, the prefix was never seen, and `@localhost hostname` went verbatim to the default host — failing there with `eval: @localhost: not found`. The wrapper is now detected by anchoring on the stable `shopt -u extglob` token and taking the first `eval '` after it, so future prelude changes are tolerated. Same fix applies to the PowerShell path, which strips the same wrapper.
 - `tests/cases/08-wrapped-localhost-routing.sh` now runs its suite against every known wrapper form (2.1.173 and 2.1.258) and adds a multi-line heredoc case.
@@ -18,9 +22,14 @@ All notable changes to remote-launcher will be documented here.
 - Troubleshooting: new section for the `base64: not found` symptom, ahead of the "command not found" section that would otherwise mislead.
 - README limitations + REMOTE_PROMPT: state that the remote needs little beyond a POSIX `/bin/sh`, and that the prompt's GNU-flavored tool advice (`sed -i`, `grep -rn`) needs adapting on BusyBox/BSD hosts.
 - Troubleshooting: an unattended or headless (`-p`) session authenticated with `CLAUDE_CODE_OAUTH_TOKEN` could start returning 401s mid-run when a stored interactive login was also present — fixed in Claude Code 2.1.225; until then, keep only one credential on the Mac. The token never reaches the VM either way (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`).
+- Troubleshooting: the dangerous-`rm` section now says only what each Claude Code changelog line says, adds the 2.1.281 and 2.1.287 changes, notes that 2.1.299 asks *less* under the default `Bash(*)` rule (`CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT=1` restores the prompt), and warns not to rely on these `rm` checks on PowerShell hosts.
+- Troubleshooting: `CLAUDE_CODE_RETRY_WATCHDOG` notes for 2.1.281 (5xx after 429/529 waits) and 2.1.301 (`CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS`).
+
+### CI
+- `actions/checkout` v4 → v5 (Node 20 → Node 24 runtime).
 
 ### Tracking
-- Bumped Claude Code tracked version to 2.1.227. Reviewed 2.1.222–2.1.227 for project relevance; no code changes warranted.
+- Bumped Claude Code tracked version to 2.1.301. Reviewed 2.1.273–2.1.301; checked `ssh-shell` against a real 2.1.301 run (`-c <cmd>` for each Bash call, `-c -l <cmd>` for the shell snapshot, `@host` routing and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` working).
 
 ## [0.2.4]
 
