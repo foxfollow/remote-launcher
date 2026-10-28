@@ -94,6 +94,7 @@ log_invocation() {
     echo "PWD=$(pwd)"
     echo "HOME=${HOME:-<unset>}"
     echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-<unset>}"
+    echo "agent-sock file=$(cat "$STATE_DIR/agent-sock" 2>/dev/null || echo '<none>')"
     echo "TMPDIR=${TMPDIR:-<unset>}"
     echo "VM_REMOTE_SHELL=${VM_REMOTE_SHELL:-<unset>}"
     echo "VM_REMOTE_PS_EXE=${VM_REMOTE_PS_EXE:-<unset>}"
@@ -282,11 +283,23 @@ exit \$__EC"
   exit $EC
 fi
 
+# Claude Code scrubs SSH_AUTH_SOCK (and any AUTH-looking env name) from our env;
+# remote-launcher leaves the agent socket path in $STATE_DIR/agent-sock so a key
+# unlocked into ssh-agent at launch still works. Restored only here (after the
+# @localhost path), and ForwardAgent=no below keeps the agent on the Mac even
+# if ~/.ssh/config enables forwarding.
+AGENT_SOCK_FILE="$STATE_DIR/agent-sock"
+if [[ -z "${SSH_AUTH_SOCK:-}" && -s "$AGENT_SOCK_FILE" ]]; then
+  SSH_AUTH_SOCK=$(<"$AGENT_SOCK_FILE")
+  export SSH_AUTH_SOCK
+fi
+
 SSH_OPTS=(
   -o "ControlMaster=auto"
   -o "ControlPath=$SSH_CTL"
   -o "ControlPersist=15m"
   -o "BatchMode=yes"
+  -o "ForwardAgent=no"
   -o "StrictHostKeyChecking=accept-new"
   -o "ServerAliveInterval=30"
   -o "ServerAliveCountMax=3"
