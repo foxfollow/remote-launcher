@@ -216,7 +216,8 @@ key_in_agent() {
 # cause is a passphrase-protected key no agent holds, or a host that wants a
 # password; both are fixable if ssh is allowed to ask. Two steps:
 #   1. ssh-add the key ssh would have used — one passphrase prompt, and every
-#      later connection benefits, including ssh-shell's (still BatchMode=yes).
+#      later connection benefits, including ssh-shell's (still BatchMode=yes;
+#      it finds the agent via the agent-sock file written before the exec).
 #   2. failing that, connect interactively while opening the ControlMaster
 #      socket ssh-shell reuses, so a password typed once covers the session.
 # Returns 0 once the plain BatchMode probe (or the master) works.
@@ -497,6 +498,18 @@ fi
 # backward compatibility (older ssh-shell behavior + scripts that read them).
 # VM_REMOTE_HOSTS / _SHELLS / _PS_EXES / _DEFAULT_HOST are the new multi-host
 # fields used by ssh-shell to route @host-prefixed commands.
+#
+# Claude Code strips SSH_AUTH_SOCK (and other AUTH-looking names) from the Bash
+# subprocess env, so ssh-shell would never see the agent holding a key
+# ssh_auth_recover just unlocked. Hand the socket path over through the
+# session state dir instead (same path ssh-shell computes: see STATE_DIR there);
+# ssh-shell restores it for its own ssh calls only, with ForwardAgent=no.
+if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+  STATE_DIR="${TMPDIR:-/tmp}/remote-launcher-${SESSION_ID}"
+  mkdir -p "$STATE_DIR"
+  (umask 077; printf '%s\n' "$SSH_AUTH_SOCK" > "$STATE_DIR/agent-sock")
+fi
+
 exec env \
   CLAUDE_CODE_SHELL="$SHELL_WRAPPER" \
   CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 \
